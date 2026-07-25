@@ -1,0 +1,3 @@
+# Preserve whitespace in the vendored fixtures. Several expected-output files
+# intentionally use trailing spaces, and changing them would change the tests.
+tests/upstream-picoc/** whitespace=-blank-at-eol,-space-before-tab,-blank-at-eof

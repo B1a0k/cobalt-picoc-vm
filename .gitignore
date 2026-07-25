@@ -1,0 +1,14 @@
+/build/
+/.vs/
+/.idea/
+/.vscode/
+__pycache__/
+*.py[cod]
+*.cvm
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.profraw
+*.profdata
+fred.txt
