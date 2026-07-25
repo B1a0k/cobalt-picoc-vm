@@ -12,7 +12,7 @@ Cobalt Strike Beacon Interpreter.
 
 ## Current status
 
-The complete checked-in pipeline is working on Windows x64:
+The complete checked-in pipeline is working on Windows x86 and x64:
 
 ```mermaid
 flowchart LR
@@ -31,13 +31,15 @@ The current release:
   ranges, and resource declarations before execution;
 - provides a symbolic host-call boundary used by `cvmrun` for PicoC library
   functions;
-- passes 95 project-specific checks and all 67 validated root PicoC fixtures.
+- passes 95 project-specific checks and all 67 validated root PicoC fixtures
+  independently on both x86 and x64.
 
-The format reserves x86, Beacon profile, native indirect calls, relocations,
-debug data, and checksum fields. Those reserved items are not all implemented.
-The compiler currently emits x64 `picoc-compat` packages only. Win32, Beacon,
-BOF, Teamserver, DFR declarations, and a native ABI call adapter are not part
-of this release.
+The compiler emits x86 or x64 `picoc-compat` packages from either compiler
+binary. The build produces native 32-bit and 64-bit VMs, and each VM rejects
+packages for the other architecture before execution. The format still
+reserves the Beacon profile, native indirect calls, relocations, debug data,
+and checksum fields. Win32 API resolution, Beacon, BOF, Teamserver, DFR
+declarations, and a native ABI call adapter are not part of this release.
 
 ## Build and quick start
 
@@ -57,28 +59,38 @@ Build:
 Compile and run a script:
 
 ```powershell
-.\build\cvmc.exe .\tests\add.c .\build\add.cvm
-.\build\cvmrun.exe --print-result .\build\add.cvm
+.\build\x64\cvmc.exe .\tests\add.c .\build\x64\add.cvm
+.\build\x64\cvmrun.exe --print-result .\build\x64\add.cvm
 ```
 
 The second command prints `5`. Script arguments follow the package path:
 
 ```powershell
-.\build\cvmrun.exe script.cvm - arg1 arg2
+.\build\x64\cvmrun.exe script.cvm - arg1 arg2
 ```
 
 The first `-` is an ordinary script argument and mirrors the PicoC argument
 fixture. To inspect preprocessor output:
 
 ```powershell
-.\build\cvmc.exe input.c -E
+.\build\x64\cvmc.exe input.c -E
 ```
 
 To reduce the execution budget:
 
 ```powershell
-.\build\cvmrun.exe --instruction-budget 100000 script.cvm
+.\build\x64\cvmrun.exe --instruction-budget 100000 script.cvm
 ```
+
+Each compiler defaults to its own process architecture. Either compiler can
+also cross-emit a package explicitly:
+
+```powershell
+.\build\x64\cvmc.exe --target x86 input.c output-x86.cvm
+.\build\x86\cvmrun.exe output-x86.cvm
+```
+
+The accepted target names are `x86`/`win32` and `x64`/`win64`.
 
 Run every release check:
 
@@ -107,16 +119,20 @@ The PicoC corpus keeps its original license in
 ## Build products
 
 The build directory is generated and is intentionally not committed.
+The 32-bit directory is named `x86`, not `x32`, to match Windows toolchain and
+PE architecture naming. Architecture-specific source directories are avoided;
+both targets compile the same compiler and runtime sources.
 
 | Product | Created by | Purpose |
 |---|---|---|
-| `build/cvmc.exe` | `build.ps1` | Compiles one C source file and its included headers into a `.cvm` package |
-| `build/cvmrun.exe` | `build.ps1` | Loads, verifies, and executes a `.cvm` package with the standalone host adapter |
-| `build/smoke_vm.exe` | `build.ps1` | Exercises the public runtime API and malformed-package rejection |
-| `build/add.cvm` | `build.ps1` | End-to-end sample package; its result must be `5` |
-| `build/extended-test-report.json` | `test.ps1` | Machine-readable result for the 95 secondary checks |
-| `build/extended-test-report.md` | `test.ps1` | Human-readable secondary test report |
-| `build/picoc-test-report.json` | `test.ps1` | Per-fixture result for the 67 root compatibility tests |
+| `build/x86/cvmc.exe`, `build/x64/cvmc.exe` | `build.ps1` | Native 32/64-bit compiler tools; both can emit either target with `--target` |
+| `build/x86/cvmrun.exe`, `build/x64/cvmrun.exe` | `build.ps1` | Native target VM and standalone host adapter |
+| `build/<arch>/smoke_vm.exe` | `build.ps1` | Target-native public API and malformed-package smoke test |
+| `build/<arch>/add.cvm` | `build.ps1` | Target-specific end-to-end sample package; its result must be `5` |
+| `build/<arch>/extended-test-report.json` | `test.ps1` | Machine-readable result for 95 target-specific secondary checks |
+| `build/<arch>/extended-test-report.md` | `test.ps1` | Human-readable target-specific secondary report |
+| `build/<arch>/picoc-test-report.json` | `test.ps1` | Per-fixture result for 67 target-specific compatibility tests |
+| `build/architecture-test-report.json` | `test.ps1` | PE architecture, layout, cross-emission, and cross-runtime isolation checks |
 
 Native executables used for differential tests are temporary test products,
 not release artifacts.
@@ -143,7 +159,7 @@ The compiler currently covers the behavior exercised by the published tests:
 
 Current explicit limits:
 
-- the compiler emits x64 packages with 8-byte pointers only;
+- target names are currently limited to Windows x86 and Windows x64;
 - function-pointer declarations and calls are rejected;
 - designated initializers are rejected;
 - BOF-style DFR declarations are rejected;
@@ -301,8 +317,9 @@ byte offset used when call arguments are copied into the new frame. Compiler
 assigned local offsets share the same frame. VM function calls do not use the
 platform C calling convention.
 
-Pointers inside a running x64 package are real runtime addresses to package
-data, globals, frame storage, or a host-approved range. Load, store, and copy
+Pointers inside a running package use the selected target width: 4 bytes on
+x86 and 8 bytes on x64. Their values are runtime addresses to package data,
+globals, frame storage, or a host-approved range. Load, store, and copy
 operations check that the complete access belongs to one of those ranges.
 Addresses are created only after loading; package files contain offsets and
 IDs, never those addresses.
@@ -364,7 +381,8 @@ An embedding host can lower these limits before loading a package.
 
 ## Tests
 
-`test.ps1` rebuilds from source and runs:
+`test.ps1` rebuilds from source and runs the following separately on x86 and
+x64:
 
 - runtime API smoke tests and malformed packages;
 - 13 semantic programs;
@@ -378,6 +396,13 @@ An embedding host can lower these limits before loading a package.
 - 168 generated expression properties and one generated array/loop workload;
 - symbolic import/signature inspection and compiler-emitted opcode coverage;
 - all 67 root PicoC compatibility fixtures.
+
+It then runs 15 cross-architecture checks covering native PE machine types,
+package target metadata, pointer/aggregate/array layout, parameter frame
+offsets, deterministic cross-emission, invalid target names, and rejection of
+x86 packages by x64 VMs and vice versa. The passing release gate is therefore
+`95 + 67` checks per architecture, plus 15 architecture checks and the native
+smoke pipelines.
 
 The vendored directory also contains 111 Csmith programs and one linked-list
 fixture for future compatibility work. They are retained so contributors can
@@ -435,10 +460,10 @@ For a Teamserver/Beacon integration, the intended boundary is:
 4. a Beacon-specific memory callback exposes only buffers required by the
    approved API call.
 
-That integration must add x86 compiler layout/emission, DFR syntax, a native
-ABI adapter, import policy, and Beacon allocator/output bindings. The package
-format already keeps these concerns outside the C parser and VM instruction
-loop.
+That integration must add DFR syntax, a native ABI adapter, import policy, and
+Beacon allocator/output bindings. x86/x64 compiler layout and target-native VM
+execution are already implemented. The package format keeps the remaining
+integration concerns outside the C parser and VM instruction loop.
 
 ## Extending the project
 

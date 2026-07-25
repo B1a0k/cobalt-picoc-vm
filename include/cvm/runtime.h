@@ -16,6 +16,12 @@ typedef union CvmValue {
     uintptr_t pointer;
 } CvmValue;
 
+#if defined(__cplusplus)
+static_assert(sizeof(CvmValue) == 8, "CvmValue cell layout changed");
+#else
+_Static_assert(sizeof(CvmValue) == 8, "CvmValue cell layout changed");
+#endif
+
 typedef enum CvmStatus {
     CVM_STATUS_OK = 0,
     CVM_STATUS_INVALID_ARGUMENT,

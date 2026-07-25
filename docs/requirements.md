@@ -40,7 +40,8 @@ executable code.
   the same source with a clear diagnostic.
 - Preserve stdout, stderr, exit behavior, and argument handling where the
   PicoC tests depend on them.
-- Add x86/x64 ABI and malformed-bytecode tests before native Win32 integration.
+- Keep x86/x64 layout, architecture isolation, and malformed-bytecode tests
+  passing before native Win32 integration.
 
 ## Current compatibility baseline
 
@@ -49,10 +50,10 @@ executable code.
 - The original PicoC executable may be used only as a differential oracle when
   investigating fixture behavior; it is never invoked by `cvmc`, `cvmrun`, or
   the normal test command.
-- The package currently targets x64. The format already carries architecture,
-  pointer width, profile, feature, calling-convention, import, and signature
-  metadata; x86 data-layout selection remains required before Beacon x86
-  integration.
+- The compiler emits x86 and x64 packages. Native 32-bit and 64-bit VMs execute
+  only matching packages, while either compiler binary may cross-emit either
+  target. The format carries architecture, pointer width, profile, feature,
+  calling-convention, import, and signature metadata.
 - `CALL_NATIVE_INDIRECT` and the checksum/debug/relocation section IDs are
   reserved in the stable contract. Native ABI dispatch is intentionally a
   separate adapter, not part of the PicoC compatibility host.

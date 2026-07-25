@@ -59,8 +59,15 @@ int main(void)
     package.header.magic = CVM_MAGIC;
     package.header.format_major = CVM_FORMAT_MAJOR;
     package.header.format_minor = CVM_FORMAT_MINOR;
+#if UINTPTR_MAX == UINT32_MAX
+    package.header.target_arch = CVM_ARCH_X86;
+    package.header.pointer_size = 4;
+#elif UINTPTR_MAX == UINT64_MAX
     package.header.target_arch = CVM_ARCH_X64;
     package.header.pointer_size = 8;
+#else
+#error Unsupported VM host pointer width
+#endif
     package.header.endian = 1;
     package.header.profile = CVM_PROFILE_PICOC_COMPAT;
     package.header.section_count = 4;

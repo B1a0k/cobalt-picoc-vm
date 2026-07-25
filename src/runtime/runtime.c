@@ -852,6 +852,17 @@ CvmStatus cvm_module_load(
             "invalid package target or size");
         return CVM_STATUS_INVALID_PACKAGE;
     }
+    if (header->pointer_size != sizeof(uintptr_t)) {
+        diagnostic_set(
+            diagnostic,
+            CVM_STATUS_ARCHITECTURE_MISMATCH,
+            CVM_NO_INDEX,
+            CVM_NO_INDEX,
+            "package requires a %u-bit VM, host VM is %u-bit",
+            (unsigned)header->pointer_size * 8u,
+            (unsigned)sizeof(uintptr_t) * 8u);
+        return CVM_STATUS_ARCHITECTURE_MISMATCH;
+    }
 
     directory_size = (uint64_t)header->section_count *
         sizeof(CvmSectionHeader);

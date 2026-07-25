@@ -247,9 +247,10 @@ Runtime limits include:
 - native-call argument count.
 
 The format reserves a checksum field and debug/relocation sections. Checksum
-enforcement, typed stack-shape analysis beyond depth, and target-specific x86
-emission remain integration-hardening work. Depth analysis and malformed
-control-flow rejection are implemented and covered by package mutations.
+enforcement and typed stack-shape analysis beyond depth remain
+integration-hardening work. x86/x64 target emission, native VM builds, and
+cross-architecture rejection are implemented. Depth analysis and malformed
+control-flow rejection are covered by package mutations.
 
 ## 10. Testing strategy
 

@@ -59,6 +59,11 @@ def normalized(data: bytes) -> bytes:
     return data.replace(b"\r\n", b"\n")
 
 
+def expected_for_target(expected: Path, target: str) -> Path:
+    target_specific = expected.with_name(expected.name + f".{target}")
+    return target_specific if target_specific.is_file() else expected
+
+
 def compile_source(
     compiler: Path,
     source: Path,
@@ -89,6 +94,7 @@ def semantic_cases(
     runtime: Path,
     root: Path,
     temporary: Path,
+    target: str,
 ) -> tuple[list[Result], Path | None, dict[str, Path]]:
     results: list[Result] = []
     baseline: Path | None = None
@@ -154,7 +160,9 @@ def semantic_cases(
                 )
             )
             continue
-        expected = normalized(expected_path.read_bytes())
+        expected = normalized(
+            expected_for_target(expected_path, target).read_bytes()
+        )
         actual = normalized(executed.stdout)
         if actual != expected:
             results.append(
@@ -356,6 +364,7 @@ def native_differential(
     compiler: Path | None,
     root: Path,
     temporary: Path,
+    target: str,
 ) -> list[Result]:
     if compiler is None:
         return []
@@ -374,6 +383,7 @@ def native_differential(
         compiled = run(
             [
                 str(compiler),
+                "-m32" if target == "x86" else "-m64",
                 "-std=c11",
                 "-Wno-constant-conversion",
                 "-Wno-format",
@@ -405,7 +415,9 @@ def native_differential(
             [str(executable), *script_args],
             temporary,
         )
-        expected = normalized(expected_path.read_bytes())
+        expected = normalized(
+            expected_for_target(expected_path, target).read_bytes()
+        )
         if (
             executed.returncode != 0
             or normalized(executed.stdout) != expected
@@ -916,24 +928,38 @@ def write_markdown(report: dict, path: Path) -> None:
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", type=Path, default=root / "build")
+    parser.add_argument(
+        "--build",
+        type=Path,
+        default=root / "build" / "x64",
+    )
+    parser.add_argument("--target", choices=("x86", "x64"))
     parser.add_argument(
         "--report",
         type=Path,
-        default=root / "build" / "extended-test-report.json",
+        default=root / "build" / "x64" / "extended-test-report.json",
     )
     parser.add_argument("--native-compiler", type=Path)
     arguments = parser.parse_args()
+    target = arguments.target
+    if target is None:
+        target = (
+            arguments.build.name
+            if arguments.build.name in ("x86", "x64")
+            else "x64"
+        )
     compiler = arguments.build / "cvmc.exe"
     runtime = arguments.build / "cvmrun.exe"
     if not compiler.is_file() or not runtime.is_file():
-        raise SystemExit("build/cvmc.exe and build/cvmrun.exe are required")
+        raise SystemExit(
+            f"{arguments.build}/cvmc.exe and cvmrun.exe are required"
+        )
 
     results: list[Result] = []
     with tempfile.TemporaryDirectory(prefix="cvm-extended-") as folder:
         temporary = Path(folder)
         semantic, baseline, packages = semantic_cases(
-            compiler, runtime, root, temporary
+            compiler, runtime, root, temporary, target
         )
         results.extend(semantic)
         results.extend(import_metadata_contract(packages))
@@ -943,6 +969,7 @@ def main() -> int:
                 arguments.native_compiler,
                 root,
                 temporary,
+                target,
             )
         )
         results.extend(compiler_contracts(compiler, root, temporary))
@@ -965,6 +992,7 @@ def main() -> int:
     failed = sum(result.status != "passed" for result in results)
     report = {
         "seed": "0xC0BA17",
+        "target": target,
         "total": len(results),
         "passed": len(results) - failed,
         "failed": failed,

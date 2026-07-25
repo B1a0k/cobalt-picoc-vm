@@ -61,20 +61,31 @@ def main() -> int:
     parser.add_argument(
         "--build",
         type=Path,
-        default=project / "build",
+        default=project / "build" / "x64",
     )
+    parser.add_argument("--target", choices=("x86", "x64"))
     parser.add_argument("--filter", default="")
     parser.add_argument(
         "--report",
         type=Path,
-        default=project / "build" / "picoc-test-report.json",
+        default=project / "build" / "x64" / "picoc-test-report.json",
     )
     arguments = parser.parse_args()
+    target = arguments.target
+    if target is None:
+        target = (
+            arguments.build.name
+            if arguments.build.name in ("x86", "x64")
+            else "x64"
+        )
 
     compiler = arguments.build / "cvmc.exe"
     runtime = arguments.build / "cvmrun.exe"
     if not compiler.is_file() or not runtime.is_file():
-        print("build/cvmc.exe and build/cvmrun.exe are required", file=sys.stderr)
+        print(
+            f"{arguments.build}/cvmc.exe and cvmrun.exe are required",
+            file=sys.stderr,
+        )
         return 2
 
     tests = sorted(arguments.suite.glob("*.expect"))
@@ -111,7 +122,15 @@ def main() -> int:
                 results.append(Result(name, "runtime_failed", detail))
                 continue
 
-            expected = expected_path.read_bytes().replace(b"\r\n", b"\n")
+            target_expected = expected_path.with_name(
+                expected_path.name + f".{target}"
+            )
+            selected_expected = (
+                target_expected
+                if target_expected.is_file()
+                else expected_path
+            )
+            expected = selected_expected.read_bytes().replace(b"\r\n", b"\n")
             actual = executed.stdout.replace(b"\r\n", b"\n")
             if diff_b_normalize(actual) != diff_b_normalize(expected):
                 results.append(
@@ -129,6 +148,7 @@ def main() -> int:
         totals[result.status] = totals.get(result.status, 0) + 1
     report = {
         "suite": str(arguments.suite.resolve()),
+        "target": target,
         "total": len(results),
         "totals": totals,
         "results": [asdict(result) for result in results],

@@ -10,7 +10,7 @@ Cobalt PicoC VM 由一个独立的 C 字节码编译器和一个小型字节码�
 
 ## 当前状态
 
-目前仓库里的完整链路已经能在 Windows x64 上工作：
+目前仓库里的完整链路已经能在 Windows x86 和 x64 上工作：
 
 ```mermaid
 flowchart LR
@@ -27,12 +27,13 @@ flowchart LR
 - 使用完全独立的 C 运行时执行字节码，运行时不包含 C 解析器；
 - 执行前校验包结构、控制流、栈深度、索引、内存范围和资源声明；
 - 通过符号化宿主调用接口，为 `cvmrun` 提供 PicoC 库函数；
-- 通过 95 项项目测试和 67 个 PicoC 根目录兼容用例。
+- x86 和 x64 分别通过 95 项项目测试及 67 个 PicoC 根目录兼容用例。
 
-格式已经为 x86、Beacon 配置、间接原生调用、重定位、调试信息和校验和
-预留位置，但这些预留能力并非全部实现。当前编译器只生成 x64、
-`picoc-compat` 包。这个版本不包含 Win32、Beacon、BOF、Teamserver、
-DFR 声明和原生 ABI 调用适配器。
+32 位或 64 位编译器都可以生成 x86、x64 `picoc-compat` 包。构建会产出
+原生 32 位和 64 位 VM，而且每个 VM 都会在执行前拒绝另一种架构的包。
+格式仍为 Beacon 配置、间接原生调用、重定位、调试信息和校验和预留位置。
+这个版本不包含 Win32 API 解析、Beacon、BOF、Teamserver、DFR 声明和
+原生 ABI 调用适配器。
 
 ## 构建和快速使用
 
@@ -52,27 +53,36 @@ DFR 声明和原生 ABI 调用适配器。
 编译并运行脚本：
 
 ```powershell
-.\build\cvmc.exe .\tests\add.c .\build\add.cvm
-.\build\cvmrun.exe --print-result .\build\add.cvm
+.\build\x64\cvmc.exe .\tests\add.c .\build\x64\add.cvm
+.\build\x64\cvmrun.exe --print-result .\build\x64\add.cvm
 ```
 
 第二条命令输出 `5`。脚本参数放在字节码包路径后：
 
 ```powershell
-.\build\cvmrun.exe script.cvm - arg1 arg2
+.\build\x64\cvmrun.exe script.cvm - arg1 arg2
 ```
 
 这里第一个 `-` 也是脚本参数，用于保持 PicoC 参数测试的行为。查看预处理结果：
 
 ```powershell
-.\build\cvmc.exe input.c -E
+.\build\x64\cvmc.exe input.c -E
 ```
 
 降低单次执行的指令预算：
 
 ```powershell
-.\build\cvmrun.exe --instruction-budget 100000 script.cvm
+.\build\x64\cvmrun.exe --instruction-budget 100000 script.cvm
 ```
+
+每个编译器默认生成与自身进程架构相同的包，也可以明确跨目标生成：
+
+```powershell
+.\build\x64\cvmc.exe --target x86 input.c output-x86.cvm
+.\build\x86\cvmrun.exe output-x86.cvm
+```
+
+支持的目标名称是 `x86`/`win32` 和 `x64`/`win64`。
 
 运行全部发布检查：
 
@@ -102,16 +112,19 @@ PicoC 测试语料的原许可证保存在
 ## 构建产物
 
 `build` 是生成目录，不提交到 Git。
+32 位目录命名为 `x86` 而不是 `x32`，与 Windows 工具链和 PE 架构名称保持
+一致。源码不按架构复制，两个目标使用同一套编译器和运行时源码。
 
 | 产物 | 生成命令 | 作用 |
 |---|---|---|
-| `build/cvmc.exe` | `build.ps1` | 把一个 C 源文件及其引用的头文件编译成 `.cvm` 包 |
-| `build/cvmrun.exe` | `build.ps1` | 使用独立宿主适配器加载、校验并执行 `.cvm` 包 |
-| `build/smoke_vm.exe` | `build.ps1` | 测试公开运行时接口和错误包拒绝逻辑 |
-| `build/add.cvm` | `build.ps1` | 端到端示例包，运行结果必须为 `5` |
-| `build/extended-test-report.json` | `test.ps1` | 95 项二次测试的机器可读结果 |
-| `build/extended-test-report.md` | `test.ps1` | 95 项二次测试的人类可读报告 |
-| `build/picoc-test-report.json` | `test.ps1` | 67 个根目录兼容用例的逐项结果 |
+| `build/x86/cvmc.exe`、`build/x64/cvmc.exe` | `build.ps1` | 原生 32/64 位编译器，都能通过 `--target` 生成任一目标 |
+| `build/x86/cvmrun.exe`、`build/x64/cvmrun.exe` | `build.ps1` | 对应架构的原生 VM 和独立宿主适配器 |
+| `build/<arch>/smoke_vm.exe` | `build.ps1` | 对应架构的公开接口和错误包冒烟测试 |
+| `build/<arch>/add.cvm` | `build.ps1` | 对应架构的端到端示例包，结果必须为 `5` |
+| `build/<arch>/extended-test-report.json` | `test.ps1` | 95 项对应架构二次测试的机器可读结果 |
+| `build/<arch>/extended-test-report.md` | `test.ps1` | 95 项对应架构二次测试的人类可读报告 |
+| `build/<arch>/picoc-test-report.json` | `test.ps1` | 67 个对应架构兼容用例的逐项结果 |
+| `build/architecture-test-report.json` | `test.ps1` | PE 架构、布局、跨目标生成和跨架构隔离测试 |
 
 原生编译器对照测试产生的可执行文件只是临时测试产物，不属于发布文件。
 
@@ -132,7 +145,7 @@ PicoC 测试语料的原许可证保存在
 
 当前明确限制：
 
-- 编译器只生成 8 字节指针的 x64 包；
+- 当前目标限定为 Windows x86 和 Windows x64；
 - 不支持函数指针声明和调用；
 - 不支持指定成员初始化；
 - 不支持 BOF 风格 DFR 声明；
@@ -279,9 +292,10 @@ VM 不使用原生可执行内存。字节码始终只是由解释器读取的�
 把参数复制到新栈帧的对应位置。编译器分配的局部变量也位于这个栈帧。VM
 函数调用不使用操作系统的 C 调用约定。
 
-x64 包运行时的指针是真实运行地址，可以指向包内 Data、全局区、函数栈帧或
-宿主明确允许的范围。读取、写入和复制之前，VM 检查完整访问范围是否属于
-其中之一。这些地址只在加载后产生，`.cvm` 文件内只保存偏移和编号。
+运行时指针使用目标宽度：x86 为 4 字节，x64 为 8 字节。指针值是真实运行
+地址，可以指向包内 Data、全局区、函数栈帧或宿主明确允许的范围。读取、
+写入和复制之前，VM 检查完整访问范围是否属于其中之一。这些地址只在加载后
+产生，`.cvm` 文件内只保存偏移和编号。
 
 ### VM 函数调用
 
@@ -336,7 +350,7 @@ flowchart LR
 
 ## 测试集
 
-`test.ps1` 会从源码重新构建并运行：
+`test.ps1` 会从源码重新构建，并在 x86、x64 上分别运行：
 
 - 运行时接口冒烟测试和错误包测试；
 - 13 个语义程序；
@@ -350,6 +364,11 @@ flowchart LR
 - 168 个生成表达式及一个生成的数组/循环工作负载；
 - 导入签名检查、编译器实际生成指令覆盖；
 - 67 个 PicoC 根目录兼容用例。
+
+随后还会运行 15 项跨架构检查，覆盖原生 PE 机器类型、包目标信息、指针/
+结构体/数组布局、参数栈帧偏移、跨目标生成一致性、非法目标名，以及 x86
+和 x64 VM 互相拒绝错误架构包。发布门槛因此是每个架构 `95 + 67` 项、
+再加 15 项架构测试和两套原生冒烟链路。
 
 随仓库提供的目录还包含 111 个 Csmith 程序和 1 个链表用例，供继续扩展
 兼容性。第三方开发者不需要另找 PicoC 源码仓库。它们目前不计入发布版本
@@ -403,9 +422,9 @@ cvm_module_destroy(module);
 3. Beacon 专用 `CvmHost.call` 解析允许的符号，并执行目标调用约定；
 4. Beacon 专用内存回调只允许已批准 API 需要的缓冲区。
 
-完整接入仍需增加 x86 类型布局和生成、DFR 语法、原生 ABI 适配器、导入策略，
-以及 Beacon 的分配器和输出绑定。当前包格式已经把这些工作与 C 解析器、
-VM 指令循环分开。
+完整接入仍需增加 DFR 语法、原生 ABI 适配器、导入策略，以及 Beacon 的
+分配器和输出绑定。x86/x64 类型布局、字节码生成和目标原生 VM 执行已经实现。
+当前包格式已经把剩余工作与 C 解析器、VM 指令循环分开。
 
 ## 扩展开发规则
 

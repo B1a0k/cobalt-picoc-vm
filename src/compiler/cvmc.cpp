@@ -56,6 +56,27 @@ struct CType {
     std::vector<CField> fields;
 };
 
+struct TargetDataModel {
+    CvmTargetArch architecture{CVM_ARCH_X64};
+    std::uint32_t pointerSize{8};
+    std::uint32_t pointerAlignment{8};
+};
+
+TargetDataModel targetDataModel(CvmTargetArch architecture)
+{
+    if (architecture == CVM_ARCH_X86)
+        return {CVM_ARCH_X86, 4, 4};
+    if (architecture == CVM_ARCH_X64)
+        return {CVM_ARCH_X64, 8, 8};
+    throw std::runtime_error("unsupported target architecture");
+}
+
+TargetDataModel defaultTargetDataModel()
+{
+    return targetDataModel(
+        sizeof(void *) == 4 ? CVM_ARCH_X86 : CVM_ARCH_X64);
+}
+
 TypePtr makeType(
     TypeKind kind,
     std::uint32_t size,
@@ -109,11 +130,23 @@ TypePtr scalarType(TypeKind kind, bool isUnsigned)
     }
 }
 
-TypePtr pointerType(const TypePtr &element)
+TypePtr pointerType(
+    const TypePtr &element,
+    const TargetDataModel &target)
 {
-    auto type = makeType(TypeKind::Pointer, 8, 8);
+    auto type = makeType(
+        TypeKind::Pointer,
+        target.pointerSize,
+        target.pointerAlignment);
     type->element = element;
     return type;
+}
+
+TypePtr sizeType(const TargetDataModel &target)
+{
+    return target.pointerSize == 4
+        ? scalarType(TypeKind::Integer, true)
+        : scalarType(TypeKind::LongLong, true);
 }
 
 CvmValueType vmType(const TypePtr &type)
@@ -1252,6 +1285,7 @@ struct Function {
     std::vector<CvmInstruction> code;
     std::vector<CallFixup> calls;
     std::uint32_t localBytes{};
+    std::uint32_t localAlignment{1};
     bool hasReturn{};
     std::unordered_map<std::string, std::uint32_t> labels;
     std::vector<std::pair<std::uint32_t, std::string>> gotos;
@@ -1304,8 +1338,13 @@ CvmInstruction makeInstruction(
 
 class Parser {
 public:
-    Parser(std::vector<Token> tokens, std::string file)
-        : tokens_(std::move(tokens)), file_(std::move(file))
+    Parser(
+        std::vector<Token> tokens,
+        std::string file,
+        TargetDataModel target)
+        : target_(target),
+          tokens_(std::move(tokens)),
+          file_(std::move(file))
     {
         Function entry;
         entry.name = "__entry";
@@ -1389,8 +1428,9 @@ public:
                         CVM_TYPE_I32,
                         0,
                         0));
-                    TypePtr argvType =
-                        pointerType(pointerType(charType()));
+                    TypePtr argvType = pointerType(
+                        pointerType(charType(), target_),
+                        target_);
                     function_->calls.push_back(CallFixup{
                         static_cast<std::uint32_t>(
                             function_->code.size()),
@@ -1435,6 +1475,7 @@ public:
     }
 
 private:
+    TargetDataModel target_;
     std::vector<Token> tokens_;
     std::string file_;
     std::size_t position_{};
@@ -1661,7 +1702,7 @@ private:
     TypePtr parsePointerSuffix(TypePtr base)
     {
         while (accept(TokenKind::Star))
-            base = pointerType(base);
+            base = pointerType(base, target_);
         return base;
     }
 
@@ -2035,10 +2076,12 @@ private:
                     if (at(TokenKind::LeftBracket))
                         type = parseArraySuffix(type);
                     if (type->kind == TypeKind::Array)
-                        type = pointerType(type->element);
+                        type = pointerType(type->element, target_);
                     declaredParameterTypes.push_back(type);
                     parameterOffset =
                         alignStorage(parameterOffset, type->alignment);
+                    parsed.localAlignment =
+                        std::max(parsed.localAlignment, type->alignment);
                     CvmParameter parameter{};
                     parameter.frame_offset = parameterOffset;
                     parameter.value_type =
@@ -2232,6 +2275,9 @@ private:
             take(TokenKind::LeftParen, "'('");
             function_->localBytes =
                 alignStorage(function_->localBytes, alignof(std::uint64_t));
+            function_->localAlignment = std::max<std::uint32_t>(
+                function_->localAlignment,
+                alignof(std::uint64_t));
             const std::uint32_t valueOffset = function_->localBytes;
             function_->localBytes += sizeof(std::uint64_t);
             emit(makeInstruction(
@@ -2458,6 +2504,9 @@ private:
                         alignStorage(
                             function_->localBytes,
                             type->alignment);
+                    function_->localAlignment = std::max(
+                        function_->localAlignment,
+                        type->alignment);
                     offset = function_->localBytes;
                     function_->localBytes += storageSize(type);
                 }
@@ -2535,7 +2584,8 @@ private:
         if (!expression.lvalue)
             return;
         if (expression.type->kind == TypeKind::Array) {
-            expression.type = pointerType(expression.type->element);
+            expression.type =
+                pointerType(expression.type->element, target_);
             expression.lvalue = false;
             return;
         }
@@ -2645,7 +2695,7 @@ private:
                         CVM_OP_COPY_BYTES,
                         CVM_TYPE_VOID,
                         static_cast<std::int32_t>(left.type->size)));
-                    left.type = pointerType(left.type);
+                    left.type = pointerType(left.type, target_);
                     left.lvalue = false;
                     continue;
                 }
@@ -2912,18 +2962,20 @@ private:
         if (name == "__picoc_argc")
             return intType();
         if (name == "__picoc_argv")
-            return pointerType(pointerType(charType()));
+            return pointerType(
+                pointerType(charType(), target_),
+                target_);
         if (name == "strlen")
-            return scalarType(TypeKind::LongLong, true);
+            return sizeType(target_);
         if (name == "fread" || name == "fwrite")
-            return scalarType(TypeKind::LongLong, true);
+            return sizeType(target_);
         if (name == "strcpy" || name == "strncpy" ||
             name == "strcat" || name == "index" ||
             name == "rindex" || name == "fgets")
-            return pointerType(charType());
+            return pointerType(charType(), target_);
         if (name == "memcpy" || name == "memset" ||
             name == "fopen")
-            return pointerType(voidType());
+            return pointerType(voidType(), target_);
         if (name == "sin" || name == "cos" || name == "tan" ||
             name == "asin" || name == "acos" || name == "atan" ||
             name == "sinh" || name == "cosh" || name == "tanh" ||
@@ -2976,14 +3028,13 @@ private:
                 measured = expression.type;
                 function_->code.resize(codeStart);
             }
+            const TypePtr resultType = sizeType(target_);
             emit(makeInstruction(
                 CVM_OP_PUSH_IMMEDIATE,
-                CVM_TYPE_U64,
+                vmType(resultType),
                 static_cast<std::int32_t>(measured->size),
                 0));
-            return {
-                scalarType(TypeKind::LongLong, true),
-                false};
+            return {resultType, false};
         }
         if (at(TokenKind::LeftParen) &&
             position_ + 1 < tokens_.size() &&
@@ -3005,7 +3056,7 @@ private:
             Expression expression = parsePrefix();
             if (!expression.lvalue)
                 fail("address-of requires an lvalue");
-            expression.type = pointerType(expression.type);
+            expression.type = pointerType(expression.type, target_);
             expression.lvalue = false;
             return expression;
         }
@@ -3182,7 +3233,7 @@ private:
                 CVM_OP_PUSH_CONSTANT_ADDRESS,
                 CVM_TYPE_CSTR,
                 static_cast<std::int32_t>(offset)));
-            return {pointerType(charType()), false};
+            return {pointerType(charType(), target_), false};
         }
         if (at(TokenKind::Identifier)) {
             const std::string name =
@@ -3193,7 +3244,7 @@ private:
                     CVM_TYPE_PTR,
                     0,
                     0));
-                return {pointerType(voidType()), false};
+                return {pointerType(voidType(), target_), false};
             }
             const auto enumValue = enumConstants_.find(name);
             if (enumValue != enumConstants_.end()) {
@@ -3262,7 +3313,7 @@ private:
                 if (firstValue == TokenKind::Floating)
                     inferred = scalarType(TypeKind::Double, false);
                 else if (firstValue == TokenKind::String)
-                    inferred = pointerType(charType());
+                    inferred = pointerType(charType(), target_);
                 else if (firstValue == TokenKind::BitAnd) {
                     const Variable *pointed = nullptr;
                     if (position_ + 2 < tokens_.size() &&
@@ -3274,7 +3325,8 @@ private:
                     inferred = pointerType(
                         pointed != nullptr
                             ? pointed->type
-                            : voidType());
+                            : voidType(),
+                        target_);
                 }
                 else
                     inferred =
@@ -3283,6 +3335,9 @@ private:
                     alignStorage(
                         function_->localBytes,
                         inferred->alignment);
+                function_->localAlignment = std::max(
+                    function_->localAlignment,
+                    inferred->alignment);
                 const std::uint32_t offset = function_->localBytes;
                 function_->localBytes += storageSize(inferred);
                 localScopes_.back().emplace(
@@ -3297,7 +3352,7 @@ private:
                     TypePtr element;
                     if (result.type->kind == TypeKind::Array) {
                         element = result.type->element;
-                        result.type = pointerType(element);
+                        result.type = pointerType(element, target_);
                         result.lvalue = false;
                     } else if (
                         result.type->kind == TypeKind::Pointer) {
@@ -3417,7 +3472,8 @@ void append(std::vector<std::uint8_t> &output, const T *data, std::size_t count)
 
 void writePackage(
     CompilationUnit unit,
-    const std::string &outputPath)
+    const std::string &outputPath,
+    const TargetDataModel &target)
 {
     std::vector<Function> functions = std::move(unit.functions);
     std::unordered_map<std::string, std::uint32_t> functionIndices;
@@ -3489,7 +3545,8 @@ void writePackage(
         descriptor.return_type =
             static_cast<std::uint8_t>(vmType(function.returnType));
         descriptor.local_bytes = function.localBytes;
-        descriptor.local_alignment = 4;
+        descriptor.local_alignment =
+            static_cast<std::uint16_t>(function.localAlignment);
         descriptor.maximum_stack_cells = 64;
 
         for (CvmInstruction &instruction : function.code) {
@@ -3515,8 +3572,8 @@ void writePackage(
     header.magic = CVM_MAGIC;
     header.format_major = CVM_FORMAT_MAJOR;
     header.format_minor = CVM_FORMAT_MINOR;
-    header.target_arch = CVM_ARCH_X64;
-    header.pointer_size = 8;
+    header.target_arch = static_cast<std::uint8_t>(target.architecture);
+    header.pointer_size = static_cast<std::uint8_t>(target.pointerSize);
     header.endian = 1;
     header.profile = CVM_PROFILE_PICOC_COMPAT;
     header.section_count = sectionCount;
@@ -3611,14 +3668,41 @@ void writePackage(
 
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
-        std::fprintf(stderr, "usage: cvmc <input.c> <output.cvm>\n");
+    TargetDataModel target = defaultTargetDataModel();
+    int argument = 1;
+    if (argument < argc && std::strcmp(argv[argument], "--target") == 0) {
+        if (argument + 1 >= argc) {
+            std::fprintf(stderr, "--target requires x86 or x64\n");
+            return 2;
+        }
+        const char *name = argv[argument + 1];
+        if (std::strcmp(name, "x86") == 0 ||
+            std::strcmp(name, "win32") == 0) {
+            target = targetDataModel(CVM_ARCH_X86);
+        } else if (
+            std::strcmp(name, "x64") == 0 ||
+            std::strcmp(name, "win64") == 0) {
+            target = targetDataModel(CVM_ARCH_X64);
+        } else {
+            std::fprintf(
+                stderr,
+                "unknown target '%s'; expected x86 or x64\n",
+                name);
+            return 2;
+        }
+        argument += 2;
+    }
+    if (argc - argument != 2) {
+        std::fprintf(
+            stderr,
+            "usage: cvmc [--target x86|x64] <input.c> <output.cvm>\n");
         return 2;
     }
     try {
         Preprocessor preprocessor;
-        const std::string preprocessed = preprocessor.process(argv[1]);
-        if (std::strcmp(argv[2], "-E") == 0) {
+        const std::string preprocessed =
+            preprocessor.process(argv[argument]);
+        if (std::strcmp(argv[argument + 1], "-E") == 0) {
             std::fwrite(
                 preprocessed.data(),
                 1,
@@ -3626,9 +3710,9 @@ int main(int argc, char **argv)
                 stdout);
             return 0;
         }
-        Lexer lexer(preprocessed, argv[1]);
-        Parser parser(lexer.scan(), argv[1]);
-        writePackage(parser.parse(), argv[2]);
+        Lexer lexer(preprocessed, argv[argument]);
+        Parser parser(lexer.scan(), argv[argument], target);
+        writePackage(parser.parse(), argv[argument + 1], target);
         return 0;
     } catch (const std::exception &error) {
         std::fprintf(stderr, "%s\n", error.what());

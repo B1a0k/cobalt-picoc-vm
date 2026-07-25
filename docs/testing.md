@@ -27,7 +27,7 @@ designated initializers, and DFR declarations currently live in this category.
 When implemented, their tests must move to the positive suite and carry
 concrete output or metadata assertions.
 
-The current secondary report contains 95 passing checks: 13 semantics,
+Each target-specific secondary report contains 95 passing checks: 13 semantics,
 13 deterministic rebuilds, 13 source-separation checks, 11 native
 differentials, 8 negative compiler contracts, 4 runtime contracts,
 3 explicit unsupported contracts, 26 package mutations, 2 generated-property
@@ -41,4 +41,7 @@ import contract, and one compiler-emittable opcode coverage contract.
 - Random properties use a fixed published seed and an independent evaluator.
 - Package mutations operate on format fields, not implementation internals.
 - The 67 root compatibility fixtures under `tests/upstream-picoc` always run
-  after the secondary suite.
+  after the secondary suite on both x86 and x64.
+- Cross-architecture checks verify PE machine types, package headers, pointer
+  and aggregate layout, parameter offsets, deterministic cross-emission, and
+  rejection of mismatched packages.
