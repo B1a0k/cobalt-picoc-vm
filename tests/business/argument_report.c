@@ -1,5 +1,6 @@
 #include <beacon.h>
 
+/* Arguments panel contract: add a str row followed by an int row. */
 datap arguments;
 char *label;
 int requested_limit;

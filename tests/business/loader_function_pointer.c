@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <beacon.h>
 
+/* Resolve a native API at runtime and invoke it through a typed pointer. */
 size_t (cdecl *resolved_strlen)(char *text);
 void *module;
 void *address;
