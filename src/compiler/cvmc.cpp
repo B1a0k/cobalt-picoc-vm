@@ -1420,8 +1420,10 @@ public:
     Parser(
         std::vector<Token> tokens,
         std::string file,
-        TargetDataModel target)
+        TargetDataModel target,
+        CvmProfile profile)
         : target_(target),
+          profile_(profile),
           tokens_(std::move(tokens)),
           file_(std::move(file))
     {
@@ -1440,11 +1442,63 @@ public:
             "wchar_t",
             scalarType(TypeKind::Short, true));
         enumConstants_.emplace("EOF", -1);
+        if (profile_ == CVM_PROFILE_BEACON) {
+            TypePtr argcType = intType();
+            TypePtr argvType =
+                pointerType(charType(), target_);
+            globals_.emplace(
+                "__argc",
+                Variable{0, true, argcType});
+            globalBytes_ = storageSize(argcType);
+            globalBytes_ =
+                alignStorage(globalBytes_, argvType->alignment);
+            globals_.emplace(
+                "__argv",
+                Variable{globalBytes_, true, argvType});
+            globalBytes_ += storageSize(argvType);
+        }
     }
 
     CompilationUnit parse()
     {
         function_ = &functions_[0];
+        if (profile_ == CVM_PROFILE_BEACON) {
+            const Variable &argcVariable =
+                findVariable("__argc");
+            const Variable &argvVariable =
+                findVariable("__argv");
+            emitAddress(argcVariable);
+            function_->calls.push_back(CallFixup{
+                static_cast<std::uint32_t>(
+                    function_->code.size()),
+                "__picoc_argc",
+                {}});
+            emit(makeInstruction(
+                CVM_OP_CALL,
+                CVM_TYPE_I32,
+                0,
+                0));
+            emit(makeInstruction(
+                CVM_OP_STORE,
+                CVM_TYPE_I32));
+            emit(makeInstruction(CVM_OP_POP));
+
+            emitAddress(argvVariable);
+            function_->calls.push_back(CallFixup{
+                static_cast<std::uint32_t>(
+                    function_->code.size()),
+                "__picoc_argv",
+                {}});
+            emit(makeInstruction(
+                CVM_OP_CALL,
+                CVM_TYPE_PTR,
+                0,
+                0));
+            emit(makeInstruction(
+                CVM_OP_STORE,
+                CVM_TYPE_PTR));
+            emit(makeInstruction(CVM_OP_POP));
+        }
         while (!at(TokenKind::End)) {
             if (at(TokenKind::Identifier) &&
                 current().text.find('$') != std::string::npos &&
@@ -1507,6 +1561,8 @@ public:
         resolveGotos(*function_);
         function_ = &functions_[0];
         for (const Function &candidate : functions_) {
+            if (profile_ != CVM_PROFILE_PICOC_COMPAT)
+                break;
             if (candidate.name == "main" &&
                 (candidate.parameters.empty() ||
                  candidate.parameters.size() == 2)) {
@@ -1570,6 +1626,7 @@ public:
 
 private:
     TargetDataModel target_;
+    CvmProfile profile_;
     std::vector<Token> tokens_;
     std::string file_;
     std::size_t position_{};
@@ -3917,7 +3974,8 @@ void append(std::vector<std::uint8_t> &output, const T *data, std::size_t count)
 void writePackage(
     CompilationUnit unit,
     const std::string &outputPath,
-    const TargetDataModel &target)
+    const TargetDataModel &target,
+    CvmProfile profile)
 {
     std::vector<Function> functions = std::move(unit.functions);
     std::unordered_map<std::string, std::uint32_t> functionIndices;
@@ -4049,7 +4107,7 @@ void writePackage(
     header.target_arch = static_cast<std::uint8_t>(target.architecture);
     header.pointer_size = static_cast<std::uint8_t>(target.pointerSize);
     header.endian = 1;
-    header.profile = CVM_PROFILE_PICOC_COMPAT;
+    header.profile = static_cast<std::uint8_t>(profile);
     if (!imports.empty())
         header.features |= CVM_FEATURE_NATIVE_IMPORTS;
     if (std::any_of(
@@ -4154,6 +4212,7 @@ void writePackage(
 int main(int argc, char **argv)
 {
     TargetDataModel target = defaultTargetDataModel();
+    CvmProfile profile = CVM_PROFILE_PICOC_COMPAT;
     std::vector<std::filesystem::path> includePaths;
     int argument = 1;
     while (argument < argc) {
@@ -4189,6 +4248,28 @@ int main(int argc, char **argv)
             argument += 2;
             continue;
         }
+        if (std::strcmp(argv[argument], "--profile") == 0) {
+            if (argument + 1 >= argc) {
+                std::fprintf(
+                    stderr,
+                    "--profile requires picoc or beacon\n");
+                return 2;
+            }
+            const char *name = argv[argument + 1];
+            if (std::strcmp(name, "picoc") == 0)
+                profile = CVM_PROFILE_PICOC_COMPAT;
+            else if (std::strcmp(name, "beacon") == 0)
+                profile = CVM_PROFILE_BEACON;
+            else {
+                std::fprintf(
+                    stderr,
+                    "unknown profile '%s'; expected picoc or beacon\n",
+                    name);
+                return 2;
+            }
+            argument += 2;
+            continue;
+        }
         if (std::strncmp(argv[argument], "-I", 2) == 0 &&
             argv[argument][2] != '\0') {
             includePaths.emplace_back(argv[argument] + 2);
@@ -4200,7 +4281,8 @@ int main(int argc, char **argv)
     if (argc - argument != 2) {
         std::fprintf(
             stderr,
-            "usage: cvmc [--target x86|x64] [-I directory] "
+            "usage: cvmc [--target x86|x64] "
+            "[--profile picoc|beacon] [-I directory] "
             "<input.c> <output.cvm>\n");
         return 2;
     }
@@ -4217,8 +4299,16 @@ int main(int argc, char **argv)
             return 0;
         }
         Lexer lexer(preprocessed, argv[argument]);
-        Parser parser(lexer.scan(), argv[argument], target);
-        writePackage(parser.parse(), argv[argument + 1], target);
+        Parser parser(
+            lexer.scan(),
+            argv[argument],
+            target,
+            profile);
+        writePackage(
+            parser.parse(),
+            argv[argument + 1],
+            target,
+            profile);
         return 0;
     } catch (const std::exception &error) {
         std::fprintf(stderr, "%s\n", error.what());
