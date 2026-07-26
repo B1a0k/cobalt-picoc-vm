@@ -18,6 +18,7 @@ the Beacon integration contract before observing the VM result.
 | Opcode coverage | package instruction scan | every opcode currently emitted by the compiler |
 | Reproducibility | byte-for-byte comparison | deterministic compiler output |
 | Source separation | source-token scan of `.cvm` | VM package contains bytecode/data, not source text |
+| Official/business scripts | official demo plus bounded inventory scripts | headers/no-header DFR, packed arguments, process inventory, loader/function pointer, deterministic x86/x64 packages |
 
 ## Capability accounting
 

@@ -54,6 +54,9 @@ foreach ($target in $targets) {
 
     & (Join-Path $projectRoot "tools\run_ffi_tests.ps1") `
         -Architecture $name
+
+    & (Join-Path $projectRoot "tools\run_business_tests.ps1") `
+        -Architecture $name
 }
 
 & python `

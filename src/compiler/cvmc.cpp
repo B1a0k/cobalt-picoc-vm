@@ -965,6 +965,7 @@ struct Token {
     std::string text;
     std::int64_t integer{};
     double floating{};
+    bool wide{};
     std::uint32_t line{};
     std::uint32_t column{};
 };
@@ -1060,7 +1061,9 @@ private:
             token.kind = TokenKind::End;
             return token;
         }
-        if (std::isalpha(static_cast<unsigned char>(first)) || first == '_') {
+        if ((std::isalpha(static_cast<unsigned char>(first)) ||
+             first == '_') &&
+            !(first == 'L' && peek(1) == '"')) {
             while (std::isalnum(static_cast<unsigned char>(peek())) ||
                    peek() == '_' || peek() == '$') {
                 token.text.push_back(take());
@@ -1165,7 +1168,12 @@ private:
             }
             return token;
         }
-        if (first == '"' || first == '\'') {
+        if (first == '"' || first == '\'' ||
+            (first == 'L' && peek(1) == '"')) {
+            if (first == 'L') {
+                token.wide = true;
+                take();
+            }
             const char quote = take();
             token.kind =
                 quote == '"' ? TokenKind::String : TokenKind::Character;
@@ -1971,6 +1979,14 @@ private:
     {
         take(TokenKind::KwTypedef, "'typedef'");
         TypePtr base = parseType();
+        if (at(TokenKind::LeftParen)) {
+            std::string name;
+            TypePtr type =
+                parseFunctionPointerDeclarator(base, name);
+            typedefs_[name] = type;
+            take(TokenKind::Semicolon, "';'");
+            return;
+        }
         for (;;) {
             TypePtr type = parsePointerSuffix(base);
             const std::string name =
@@ -2169,9 +2185,12 @@ private:
         }
         std::uint32_t count = 0;
         if (tokens_[position_ + 1].kind == TokenKind::String &&
-            type->element->kind == TypeKind::Character) {
-            count = static_cast<std::uint32_t>(
-                tokens_[position_ + 1].text.size() + 1);
+            ((tokens_[position_ + 1].wide &&
+              type->element->size == 2) ||
+             (!tokens_[position_ + 1].wide &&
+              type->element->size == 1))) {
+            count = stringLiteralElementCount(
+                tokens_[position_ + 1]);
         } else if (tokens_[position_ + 1].kind == TokenKind::LeftBrace) {
             int depth = 0;
             bool hasValue = false;
@@ -2205,6 +2224,109 @@ private:
         type->size = count * type->element->size;
     }
 
+    static std::uint32_t stringLiteralElementCount(
+        const Token &literal)
+    {
+        if (!literal.wide)
+            return static_cast<std::uint32_t>(
+                literal.text.size() + 1);
+        std::uint32_t units = 1;
+        for (std::size_t index = 0;
+             index < literal.text.size();) {
+            const unsigned char first =
+                static_cast<unsigned char>(literal.text[index]);
+            std::uint32_t codePoint = first;
+            std::size_t length = 1;
+            if ((first & 0xe0u) == 0xc0u) {
+                codePoint = first & 0x1fu;
+                length = 2;
+            } else if ((first & 0xf0u) == 0xe0u) {
+                codePoint = first & 0x0fu;
+                length = 3;
+            } else if ((first & 0xf8u) == 0xf0u) {
+                codePoint = first & 0x07u;
+                length = 4;
+            }
+            if (index + length > literal.text.size())
+                length = 1;
+            for (std::size_t offset = 1;
+                 offset < length;
+                 ++offset) {
+                codePoint =
+                    (codePoint << 6u) |
+                    (static_cast<unsigned char>(
+                         literal.text[index + offset]) &
+                     0x3fu);
+            }
+            units += codePoint > 0xffffu ? 2u : 1u;
+            index += length;
+        }
+        return units;
+    }
+
+    static std::vector<std::uint8_t> encodeStringLiteral(
+        const Token &literal)
+    {
+        if (!literal.wide) {
+            std::vector<std::uint8_t> encoded(
+                literal.text.begin(),
+                literal.text.end());
+            encoded.push_back(0);
+            return encoded;
+        }
+        std::vector<std::uint8_t> encoded;
+        const auto appendUnit =
+            [&encoded](std::uint16_t unit) {
+                encoded.push_back(
+                    static_cast<std::uint8_t>(unit));
+                encoded.push_back(
+                    static_cast<std::uint8_t>(unit >> 8u));
+            };
+        for (std::size_t index = 0;
+             index < literal.text.size();) {
+            const unsigned char first =
+                static_cast<unsigned char>(literal.text[index]);
+            std::uint32_t codePoint = first;
+            std::size_t length = 1;
+            if ((first & 0xe0u) == 0xc0u) {
+                codePoint = first & 0x1fu;
+                length = 2;
+            } else if ((first & 0xf0u) == 0xe0u) {
+                codePoint = first & 0x0fu;
+                length = 3;
+            } else if ((first & 0xf8u) == 0xf0u) {
+                codePoint = first & 0x07u;
+                length = 4;
+            }
+            if (index + length > literal.text.size()) {
+                codePoint = first;
+                length = 1;
+            } else {
+                for (std::size_t offset = 1;
+                     offset < length;
+                     ++offset) {
+                    codePoint =
+                        (codePoint << 6u) |
+                        (static_cast<unsigned char>(
+                             literal.text[index + offset]) &
+                         0x3fu);
+                }
+            }
+            if (codePoint <= 0xffffu) {
+                appendUnit(static_cast<std::uint16_t>(codePoint));
+            } else {
+                codePoint -= 0x10000u;
+                appendUnit(static_cast<std::uint16_t>(
+                    0xd800u + (codePoint >> 10u)));
+                appendUnit(static_cast<std::uint16_t>(
+                    0xdc00u + (codePoint & 0x3ffu)));
+            }
+            index += length;
+        }
+        appendUnit(0);
+        return encoded;
+    }
+
     std::uint32_t storageSize(const TypePtr &type) const
     {
         return type->size;
@@ -2221,28 +2343,32 @@ private:
     {
         if (type->kind == TypeKind::Array) {
             if (at(TokenKind::String) &&
-                type->element->kind == TypeKind::Character) {
+                ((current().wide &&
+                  type->element->size == 2) ||
+                 (!current().wide &&
+                  type->element->size == 1))) {
                 const Token literal =
                     take(TokenKind::String, "string initializer");
                 const std::uint32_t offset =
                     static_cast<std::uint32_t>(data_.size());
+                const std::vector<std::uint8_t> encoded =
+                    encodeStringLiteral(literal);
                 data_.insert(
                     data_.end(),
-                    literal.text.begin(),
-                    literal.text.end());
-                data_.push_back(0);
+                    encoded.begin(),
+                    encoded.end());
                 emit(makeInstruction(
                     CVM_OP_PUSH_CONSTANT_ADDRESS,
-                    CVM_TYPE_CSTR,
+                    CVM_TYPE_PTR,
                     static_cast<std::int32_t>(offset)));
+                const std::uint32_t copySize =
+                    std::min<std::uint32_t>(
+                        type->size,
+                        static_cast<std::uint32_t>(encoded.size()));
                 emit(makeInstruction(
                     CVM_OP_COPY_BYTES,
                     CVM_TYPE_VOID,
-                    static_cast<std::int32_t>(
-                        std::min<std::uint32_t>(
-                            type->size,
-                            static_cast<std::uint32_t>(
-                                literal.text.size() + 1)))));
+                    static_cast<std::int32_t>(copySize)));
                 emit(makeInstruction(CVM_OP_POP));
                 return;
             }
@@ -2390,7 +2516,8 @@ private:
         localScopes_.push_back({});
         Function parsed;
         if (isTypeStart(current().kind)) {
-            parsed.returnType = parseType();
+            parsed.returnType =
+                parsePointerSuffix(parseType());
         } else {
             const auto prototype = prototypes_.find(current().text);
             parsed.returnType =
@@ -3520,6 +3647,29 @@ private:
         if (accept(TokenKind::LeftParen)) {
             Expression expression = parseExpression();
             take(TokenKind::RightParen, "')'");
+            while (accept(TokenKind::LeftBracket)) {
+                TypePtr element;
+                if (expression.type->kind == TypeKind::Array) {
+                    element = expression.type->element;
+                    expression.type =
+                        pointerType(element, target_);
+                    expression.lvalue = false;
+                } else if (
+                    expression.type->kind == TypeKind::Pointer) {
+                    element = expression.type->element;
+                    makeRvalue(expression);
+                } else {
+                    fail("subscript requires an array or pointer");
+                }
+                Expression index = parseExpression();
+                makeRvalue(index);
+                take(TokenKind::RightBracket, "']'");
+                emit(makeInstruction(
+                    CVM_OP_POINTER_INDEX,
+                    CVM_TYPE_PTR,
+                    static_cast<std::int32_t>(element->size)));
+                expression = {element, true};
+            }
             return expression;
         }
         if (at(TokenKind::Integer)) {
@@ -3615,22 +3765,59 @@ private:
         if (at(TokenKind::String)) {
             Token token = take(TokenKind::String, "string literal");
             while (at(TokenKind::String)) {
-                token.text +=
-                    take(TokenKind::String, "string literal").text;
+                const Token continuation =
+                    take(TokenKind::String, "string literal");
+                if (continuation.wide != token.wide)
+                    fail("cannot concatenate narrow and wide string literals");
+                token.text += continuation.text;
             }
             const std::uint32_t offset =
                 static_cast<std::uint32_t>(data_.size());
-            data_.insert(data_.end(), token.text.begin(), token.text.end());
-            data_.push_back(0);
+            const std::vector<std::uint8_t> encoded =
+                encodeStringLiteral(token);
+            data_.insert(
+                data_.end(),
+                encoded.begin(),
+                encoded.end());
             emit(makeInstruction(
                 CVM_OP_PUSH_CONSTANT_ADDRESS,
-                CVM_TYPE_CSTR,
+                token.wide ? CVM_TYPE_PTR : CVM_TYPE_CSTR,
                 static_cast<std::int32_t>(offset)));
-            return {pointerType(charType(), target_), false};
+            return {pointerType(
+                token.wide
+                    ? scalarType(TypeKind::Short, false)
+                    : charType(),
+                target_), false};
         }
         if (at(TokenKind::Identifier)) {
             const std::string name =
                 take(TokenKind::Identifier, "identifier").text;
+            if (name == "__builtin_offsetof") {
+                take(TokenKind::LeftParen, "'('");
+                const TypePtr aggregate = parseType();
+                if (aggregate->kind != TypeKind::Structure &&
+                    aggregate->kind != TypeKind::Union)
+                    fail("__builtin_offsetof requires a struct or union");
+                take(TokenKind::Comma, "','");
+                const std::string fieldName =
+                    take(TokenKind::Identifier, "field name").text;
+                take(TokenKind::RightParen, "')'");
+                const auto field = std::find_if(
+                    aggregate->fields.begin(),
+                    aggregate->fields.end(),
+                    [&](const CField &candidate) {
+                        return candidate.name == fieldName;
+                    });
+                if (field == aggregate->fields.end())
+                    fail("unknown aggregate field '" + fieldName + "'");
+                const TypePtr resultType = sizeType(target_);
+                emit(makeInstruction(
+                    CVM_OP_PUSH_IMMEDIATE,
+                    vmType(resultType),
+                    static_cast<std::int32_t>(field->offset),
+                    0));
+                return {resultType, false};
+            }
             if (name == "NULL") {
                 emit(makeInstruction(
                     CVM_OP_PUSH_IMMEDIATE,
