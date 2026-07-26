@@ -51,6 +51,9 @@ foreach ($target in $targets) {
     if ($LASTEXITCODE -ne 0) {
         throw "$name upstream PicoC regression failed"
     }
+
+    & (Join-Path $projectRoot "tools\run_ffi_tests.ps1") `
+        -Architecture $name
 }
 
 & python `

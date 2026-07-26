@@ -317,8 +317,17 @@ static int opcode_stack_effect(
         }
         return 1;
     case CVM_OP_CALL_NATIVE_INDIRECT:
-        /* Reserved until the native ABI adapter is implemented. */
-        return 0;
+        if (instruction->a < 0 ||
+            (uint32_t)instruction->a >= module->signature_count)
+            return 0;
+        {
+            const CvmNativeSignature *signature =
+                &module->signatures[(uint32_t)instruction->a];
+            *required = signature->parameter_count + 1;
+            *delta = -*required +
+                (signature->return_type == CVM_TYPE_VOID ? 0 : 1);
+        }
+        return 1;
     default:
         return 0;
     }
@@ -602,6 +611,34 @@ static CvmStatus verify_module(
                 index,
                 "invalid import index");
             return CVM_STATUS_VERIFICATION_FAILED;
+        }
+        if (instruction->opcode == CVM_OP_CALL_NATIVE_INDIRECT) {
+            if (instruction->a < 0 ||
+                (uint32_t)instruction->a >= module->signature_count) {
+                diagnostic_set(
+                    diagnostic,
+                    CVM_STATUS_VERIFICATION_FAILED,
+                    CVM_NO_INDEX,
+                    index,
+                    "invalid indirect native signature index");
+                return CVM_STATUS_VERIFICATION_FAILED;
+            }
+            {
+                const CvmNativeSignature *signature =
+                    &module->signatures[(uint32_t)instruction->a];
+                if (instruction->b < 0 ||
+                    (uint32_t)instruction->b !=
+                        signature->parameter_count ||
+                    instruction->type != signature->return_type) {
+                    diagnostic_set(
+                        diagnostic,
+                        CVM_STATUS_VERIFICATION_FAILED,
+                        CVM_NO_INDEX,
+                        index,
+                        "indirect native call does not match signature");
+                    return CVM_STATUS_VERIFICATION_FAILED;
+                }
+            }
         }
         if (instruction->opcode == CVM_OP_CALL_IMPORT &&
             (uint32_t)instruction->a < module->import_count) {
@@ -1825,6 +1862,66 @@ static CvmStatus run(
             memset(&call, 0, sizeof(call));
             call.library = module->strings + import->library_string;
             call.symbol = module->strings + import->symbol_string;
+            call.calling_convention =
+                (CvmCallingConvention)signature->calling_convention;
+            call.return_type =
+                (CvmValueType)signature->return_type;
+            call.parameter_types = parameterTypes;
+            call.parameter_count = signature->parameter_count;
+            call.arguments = arguments;
+            value.u64 = 0;
+            status = execution->host->call(
+                execution->host->context,
+                &call,
+                &value,
+                diagnostic);
+            if (status != CVM_STATUS_OK)
+                return status;
+            if (call.return_type != CVM_TYPE_VOID) {
+                status = push(execution, value, diagnostic);
+                if (status != CVM_STATUS_OK)
+                    return status;
+            }
+            break;
+        }
+        case CVM_OP_CALL_NATIVE_INDIRECT:
+        {
+            const CvmNativeSignature *signature =
+                &module->signatures[(uint32_t)instruction->a];
+            CvmValue arguments[64];
+            CvmValueType parameterTypes[64];
+            CvmNativeCall call;
+            CvmValue address;
+            uint32_t argument;
+
+            if (execution->host == NULL || execution->host->call == NULL)
+                return CVM_STATUS_UNRESOLVED_IMPORT;
+            if (signature->parameter_count > 64)
+                return CVM_STATUS_RUNTIME_ERROR;
+            for (argument = signature->parameter_count;
+                 argument > 0;
+                 --argument) {
+                status = pop(
+                    execution,
+                    &arguments[argument - 1],
+                    diagnostic);
+                if (status != CVM_STATUS_OK)
+                    return status;
+            }
+            status = pop(execution, &address, diagnostic);
+            if (status != CVM_STATUS_OK)
+                return status;
+            if (address.pointer == 0)
+                return CVM_STATUS_NATIVE_CALL_FAILED;
+            for (argument = 0;
+                 argument < signature->parameter_count;
+                 ++argument) {
+                parameterTypes[argument] = (CvmValueType)
+                    module->signature_parameters[
+                        signature->first_parameter_type + argument];
+            }
+            memset(&call, 0, sizeof(call));
+            call.address = address.pointer;
             call.calling_convention =
                 (CvmCallingConvention)signature->calling_convention;
             call.return_type =

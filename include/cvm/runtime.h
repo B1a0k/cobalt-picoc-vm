@@ -58,6 +58,7 @@ typedef struct CvmDiagnostic {
 } CvmDiagnostic;
 
 typedef struct CvmNativeCall {
+    uintptr_t address;
     const char *library;
     const char *symbol;
     CvmCallingConvention calling_convention;

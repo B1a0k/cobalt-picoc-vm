@@ -30,6 +30,7 @@ enum class TypeKind {
     Float,
     Double,
     Pointer,
+    FunctionPointer,
     Array,
     Structure,
     Union,
@@ -54,6 +55,10 @@ struct CType {
     std::uint32_t elementCount{};
     std::string tag;
     std::vector<CField> fields;
+    TypePtr returnType;
+    std::vector<TypePtr> parameterTypes;
+    CvmCallingConvention callingConvention{CVM_CALL_CDECL};
+    bool variadic{};
 };
 
 struct TargetDataModel {
@@ -166,6 +171,7 @@ CvmValueType vmType(const TypePtr &type)
     case TypeKind::Float: return CVM_TYPE_F64;
     case TypeKind::Double: return CVM_TYPE_F64;
     case TypeKind::Pointer:
+    case TypeKind::FunctionPointer:
     case TypeKind::Array:
         return CVM_TYPE_PTR;
     default:
@@ -176,6 +182,7 @@ CvmValueType vmType(const TypePtr &type)
 bool isPointerLike(const TypePtr &type)
 {
     return type->kind == TypeKind::Pointer ||
+           type->kind == TypeKind::FunctionPointer ||
            type->kind == TypeKind::Array;
 }
 
@@ -187,6 +194,18 @@ struct Macro {
 
 class Preprocessor {
 public:
+    explicit Preprocessor(
+        std::vector<std::filesystem::path> includePaths = {},
+        CvmTargetArch architecture = CVM_ARCH_X64)
+        : includePaths_(std::move(includePaths))
+    {
+        Macro platform;
+        platform.replacement = "1";
+        macros_.emplace(
+            architecture == CVM_ARCH_X86 ? "_WIN32" : "_WIN64",
+            platform);
+    }
+
     std::string process(const std::filesystem::path &path)
     {
         return processFile(path, 0);
@@ -200,6 +219,7 @@ private:
     };
 
     std::unordered_map<std::string, Macro> macros_;
+    std::vector<std::filesystem::path> includePaths_;
     bool inBlockComment_{};
 
     static std::string trim(const std::string &value)
@@ -813,19 +833,44 @@ private:
             } else if (command == "undef") {
                 macros_.erase(argument);
             } else if (command == "include") {
-                if (argument.size() >= 2 &&
-                    argument.front() == '"' &&
-                    argument.back() == '"') {
-                    const auto includePath =
-                        path.parent_path() /
-                        argument.substr(1, argument.size() - 2);
-                    if (std::filesystem::exists(includePath)) {
-                        result << processFile(
-                            includePath,
-                            includeDepth + 1);
-                    }
+                if (argument.size() < 2)
+                    throw std::runtime_error("invalid #include");
+                const bool quoted =
+                    argument.front() == '"' && argument.back() == '"';
+                const bool angled =
+                    argument.front() == '<' && argument.back() == '>';
+                if (!quoted && !angled)
+                    throw std::runtime_error("invalid #include target");
+                const std::filesystem::path includeName =
+                    argument.substr(1, argument.size() - 2);
+                std::vector<std::filesystem::path> candidates;
+                if (quoted)
+                    candidates.push_back(path.parent_path() / includeName);
+                for (const auto &directory : includePaths_)
+                    candidates.push_back(directory / includeName);
+                bool found = false;
+                for (const auto &candidate : candidates) {
+                    if (!std::filesystem::exists(candidate))
+                        continue;
+                    result << processFile(candidate, includeDepth + 1);
+                    found = true;
+                    break;
                 }
-                /* Angle includes map to compiler-provided host declarations. */
+                const std::string builtIn = includeName.string();
+                const bool compilerProvided =
+                    builtIn == "stdio.h" ||
+                     builtIn == "stdlib.h" ||
+                     builtIn == "string.h" ||
+                     builtIn == "math.h" ||
+                     builtIn == "ctype.h" ||
+                     builtIn == "stdbool.h" ||
+                     builtIn == "stdint.h" ||
+                     builtIn == "stddef.h" ||
+                     builtIn == "limits.h";
+                if (!found && !compilerProvided)
+                    throw std::runtime_error(
+                        "cannot resolve include file '" +
+                        includeName.string() + "'");
             } else {
                 throw std::runtime_error(
                     "unsupported preprocessor directive #" + command);
@@ -911,6 +956,8 @@ enum class TokenKind {
     Star,
     Slash,
     Percent
+    ,
+    Ellipsis
 };
 
 struct Token {
@@ -1015,7 +1062,7 @@ private:
         }
         if (std::isalpha(static_cast<unsigned char>(first)) || first == '_') {
             while (std::isalnum(static_cast<unsigned char>(peek())) ||
-                   peek() == '_') {
+                   peek() == '_' || peek() == '$') {
                 token.text.push_back(take());
             }
             if (token.text == "int")
@@ -1184,6 +1231,12 @@ private:
         }
 
         const char second = peek(1);
+        if (first == '.' && second == '.' && peek(2) == '.') {
+            take(); take(); take();
+            token.kind = TokenKind::Ellipsis;
+            token.text = "...";
+            return token;
+        }
         if (first == '=' && second == '=') {
             take(); take(); token.kind = TokenKind::Equal; return token;
         }
@@ -1275,6 +1328,20 @@ struct CallFixup {
     std::uint32_t instruction{};
     std::string function;
     std::vector<TypePtr> argumentTypes;
+    bool nativeDeclared{};
+    bool nativeIndirect{};
+    std::string library;
+    std::string symbol;
+    CvmCallingConvention callingConvention{CVM_CALL_CDECL};
+
+    CallFixup() = default;
+    CallFixup(
+        std::uint32_t instructionValue,
+        std::string functionValue,
+        std::vector<TypePtr> argumentTypeValues)
+        : instruction(instructionValue),
+          function(std::move(functionValue)),
+          argumentTypes(std::move(argumentTypeValues)) {}
 };
 
 struct Function {
@@ -1294,6 +1361,18 @@ struct Function {
 struct FunctionPrototype {
     TypePtr returnType{intType()};
     std::vector<TypePtr> parameterTypes;
+    bool variadic{};
+    bool native{};
+    std::string library;
+    std::string symbol;
+    CvmCallingConvention callingConvention{CVM_CALL_CDECL};
+
+    FunctionPrototype() = default;
+    FunctionPrototype(
+        TypePtr returnTypeValue,
+        std::vector<TypePtr> parameterTypeValues)
+        : returnType(std::move(returnTypeValue)),
+          parameterTypes(std::move(parameterTypeValues)) {}
 };
 
 struct CompilationUnit {
@@ -1356,6 +1435,10 @@ public:
          * remains an explicit PICOC import resolved by the host.
          */
         typedefs_.emplace("FILE", voidType());
+        typedefs_.emplace("size_t", sizeType(target_));
+        typedefs_.emplace(
+            "wchar_t",
+            scalarType(TypeKind::Short, true));
         enumConstants_.emplace("EOF", -1);
     }
 
@@ -1363,9 +1446,15 @@ public:
     {
         function_ = &functions_[0];
         while (!at(TokenKind::End)) {
-            if (at(TokenKind::KwTypedef)) {
+            if (at(TokenKind::Identifier) &&
+                current().text.find('$') != std::string::npos &&
+                position_ + 1 < tokens_.size() &&
+                tokens_[position_ + 1].kind == TokenKind::Colon) {
+                parseDfrDeclaration();
+            } else if (at(TokenKind::KwTypedef)) {
                 parseTypedef();
             } else if (at(TokenKind::Identifier) &&
+                       typedefs_.count(current().text) == 0 &&
                        position_ + 1 < tokens_.size() &&
                        tokens_[position_ + 1].kind ==
                            TokenKind::LeftParen) {
@@ -1392,6 +1481,11 @@ public:
                 const std::size_t saved = position_;
                 (void)parseType();
                 if (at(TokenKind::Semicolon)) {
+                    position_ = saved;
+                    parseGlobalDeclaration();
+                    continue;
+                }
+                if (at(TokenKind::LeftParen)) {
                     position_ = saved;
                     parseGlobalDeclaration();
                     continue;
@@ -1542,6 +1636,108 @@ private:
         return true;
     }
 
+    TypePtr parseFfiAtom()
+    {
+        if (accept(TokenKind::KwVoid))
+            return voidType();
+        const std::string atom =
+            take(TokenKind::Identifier, "FFI type atom").text;
+        if (atom == "i16")
+            return scalarType(TypeKind::Short, false);
+        if (atom == "u16")
+            return scalarType(TypeKind::Short, true);
+        if (atom == "i32")
+            return scalarType(TypeKind::Integer, false);
+        if (atom == "u32")
+            return scalarType(TypeKind::Integer, true);
+        if (atom == "i64")
+            return scalarType(TypeKind::LongLong, false);
+        if (atom == "u64")
+            return scalarType(TypeKind::LongLong, true);
+        if (atom == "ptr")
+            return pointerType(voidType(), target_);
+        if (atom == "cstr")
+            return pointerType(charType(), target_);
+        if (atom == "size_t")
+            return sizeType(target_);
+        fail("unsupported FFI type atom '" + atom + "'");
+    }
+
+    void registerNativePrototype(
+        const std::string &name,
+        const FunctionPrototype &prototype)
+    {
+        const auto found = prototypes_.find(name);
+        if (found != prototypes_.end() &&
+            (!found->second.native ||
+             found->second.library != prototype.library ||
+             found->second.symbol != prototype.symbol)) {
+            fail("ambiguous native function name '" + name + "'");
+        }
+        prototypes_[name] = prototype;
+    }
+
+    void parseDfrDeclaration()
+    {
+        const std::string qualified =
+            take(TokenKind::Identifier, "DFR function name").text;
+        const std::size_t separator = qualified.find('$');
+        if (separator == 0 || separator + 1 >= qualified.size() ||
+            qualified.find('$', separator + 1) != std::string::npos) {
+            fail("DFR name must use LIBRARY$Function");
+        }
+        take(TokenKind::Colon, "':'");
+
+        CvmCallingConvention convention =
+            target_.architecture == CVM_ARCH_X64
+                ? CVM_CALL_WIN64
+                : CVM_CALL_STDCALL;
+        bool conventionExplicit = false;
+        if (at(TokenKind::Identifier) &&
+            (current().text == "cdecl" ||
+             current().text == "stdcall")) {
+            conventionExplicit = true;
+            convention =
+                current().text == "cdecl"
+                    ? CVM_CALL_CDECL
+                    : CVM_CALL_STDCALL;
+            ++position_;
+        }
+
+        FunctionPrototype prototype;
+        prototype.returnType = parseFfiAtom();
+        prototype.native = true;
+        prototype.library = qualified.substr(0, separator);
+        prototype.symbol = qualified.substr(separator + 1);
+        prototype.callingConvention = convention;
+        take(TokenKind::LeftParen, "'('");
+        if (!at(TokenKind::RightParen)) {
+            for (;;) {
+                if (accept(TokenKind::Ellipsis)) {
+                    prototype.variadic = true;
+                    if (convention == CVM_CALL_STDCALL &&
+                        conventionExplicit)
+                        fail("stdcall native function cannot be variadic");
+                    if (convention == CVM_CALL_STDCALL)
+                        convention = CVM_CALL_CDECL;
+                    prototype.callingConvention = convention;
+                    break;
+                }
+                TypePtr parameter = parseFfiAtom();
+                if (parameter->kind == TypeKind::Void)
+                    fail("native parameter cannot have void type");
+                prototype.parameterTypes.push_back(parameter);
+                if (!accept(TokenKind::Comma))
+                    break;
+            }
+        }
+        take(TokenKind::RightParen, "')'");
+        take(TokenKind::Semicolon, "';'");
+
+        registerNativePrototype(qualified, prototype);
+        registerNativePrototype(prototype.symbol, prototype);
+    }
+
     TypePtr parseType()
     {
         (void)accept(TokenKind::KwStatic);
@@ -1585,7 +1781,10 @@ private:
             return scalarType(TypeKind::Double, false);
         if (accept(TokenKind::KwInt) || isUnsigned)
             return scalarType(TypeKind::Integer, isUnsigned);
-        fail("expected a type");
+        fail(
+            "expected a type, got token '" + current().text +
+            "' (kind " +
+            std::to_string(static_cast<unsigned>(current().kind)) + ")");
     }
 
     TypePtr parseAggregate(TypeKind kind)
@@ -1618,6 +1817,29 @@ private:
         type->alignment = 1;
         while (!at(TokenKind::RightBrace)) {
             TypePtr base = parseType();
+            if (accept(TokenKind::Semicolon)) {
+                if (base->kind != TypeKind::Structure &&
+                    base->kind != TypeKind::Union) {
+                    fail("anonymous field must be a struct or union");
+                }
+                type->alignment =
+                    std::max(type->alignment, base->alignment);
+                std::uint32_t embeddedOffset = 0;
+                if (kind == TypeKind::Structure) {
+                    type->size =
+                        alignStorage(type->size, base->alignment);
+                    embeddedOffset = type->size;
+                    type->size += base->size;
+                } else {
+                    type->size = std::max(type->size, base->size);
+                }
+                for (const CField &nested : base->fields) {
+                    CField promoted = nested;
+                    promoted.offset += embeddedOffset;
+                    type->fields.push_back(std::move(promoted));
+                }
+                continue;
+            }
             for (;;) {
                 TypePtr fieldType = parsePointerSuffix(base);
                 const std::string name =
@@ -1691,11 +1913,16 @@ private:
     void parseTypedef()
     {
         take(TokenKind::KwTypedef, "'typedef'");
-        TypePtr type = parsePointerSuffix(parseType());
-        const std::string name =
-            take(TokenKind::Identifier, "typedef name").text;
-        type = parseArraySuffix(type);
-        typedefs_[name] = type;
+        TypePtr base = parseType();
+        for (;;) {
+            TypePtr type = parsePointerSuffix(base);
+            const std::string name =
+                take(TokenKind::Identifier, "typedef name").text;
+            type = parseArraySuffix(type);
+            typedefs_[name] = type;
+            if (!accept(TokenKind::Comma))
+                break;
+        }
         take(TokenKind::Semicolon, "';'");
     }
 
@@ -1704,6 +1931,69 @@ private:
         while (accept(TokenKind::Star))
             base = pointerType(base, target_);
         return base;
+    }
+
+    TypePtr parseFunctionPointerDeclarator(
+        const TypePtr &returnType,
+        std::string &name)
+    {
+        take(TokenKind::LeftParen, "'('");
+        CvmCallingConvention convention =
+            target_.architecture == CVM_ARCH_X64
+                ? CVM_CALL_WIN64
+                : CVM_CALL_CDECL;
+        if (at(TokenKind::Identifier) &&
+            (current().text == "cdecl" ||
+             current().text == "stdcall")) {
+            convention =
+                current().text == "stdcall"
+                    ? CVM_CALL_STDCALL
+                    : CVM_CALL_CDECL;
+            ++position_;
+        }
+        take(TokenKind::Star, "'*'");
+        name = take(
+            TokenKind::Identifier,
+            "function pointer name").text;
+        take(TokenKind::RightParen, "')'");
+        take(TokenKind::LeftParen, "'('");
+
+        auto type = makeType(
+            TypeKind::FunctionPointer,
+            target_.pointerSize,
+            target_.pointerAlignment);
+        type->returnType = returnType;
+        type->callingConvention = convention;
+        if (!at(TokenKind::RightParen)) {
+            if (at(TokenKind::KwVoid) &&
+                position_ + 1 < tokens_.size() &&
+                tokens_[position_ + 1].kind ==
+                    TokenKind::RightParen) {
+                ++position_;
+            } else {
+                for (;;) {
+                    if (accept(TokenKind::Ellipsis)) {
+                        if (convention == CVM_CALL_STDCALL)
+                            fail(
+                                "stdcall function pointer cannot be variadic");
+                        type->variadic = true;
+                        break;
+                    }
+                    TypePtr parameter =
+                        parsePointerSuffix(parseType());
+                    if (at(TokenKind::Identifier))
+                        ++position_;
+                    if (parameter->kind == TypeKind::Array)
+                        parameter =
+                            pointerType(parameter->element, target_);
+                    type->parameterTypes.push_back(parameter);
+                    if (!accept(TokenKind::Comma))
+                        break;
+                }
+            }
+        }
+        take(TokenKind::RightParen, "')'");
+        return type;
     }
 
     std::int64_t parseIntegerConstantExpression(int minimumPrecedence = 0)
@@ -2180,6 +2470,24 @@ private:
         const TypePtr baseType = parseType();
         if (accept(TokenKind::Semicolon))
             return;
+        if (at(TokenKind::LeftParen)) {
+            std::string name;
+            TypePtr type =
+                parseFunctionPointerDeclarator(baseType, name);
+            if (globals_.count(name) != 0)
+                fail("duplicate global variable '" + name + "'");
+            globalBytes_ =
+                alignStorage(globalBytes_, type->alignment);
+            const Variable variable{globalBytes_, true, type};
+            globalBytes_ += storageSize(type);
+            globals_.emplace(name, variable);
+            if (accept(TokenKind::Assign)) {
+                emitAddress(variable);
+                emitInitializer(type);
+            }
+            take(TokenKind::Semicolon, "';'");
+            return;
+        }
         for (;;) {
             TypePtr type = parsePointerSuffix(baseType);
             const std::string name =
@@ -2485,6 +2793,34 @@ private:
         if (isTypeStart(current().kind)) {
             const bool isStatic = at(TokenKind::KwStatic);
             const TypePtr baseType = parseType();
+            if (at(TokenKind::LeftParen)) {
+                std::string name;
+                TypePtr type =
+                    parseFunctionPointerDeclarator(baseType, name);
+                if (localScopes_.back().count(name) != 0)
+                    fail("duplicate local variable '" + name + "'");
+                function_->localBytes =
+                    alignStorage(
+                        function_->localBytes,
+                        type->alignment);
+                function_->localAlignment = std::max(
+                    function_->localAlignment,
+                    type->alignment);
+                const std::uint32_t offset =
+                    function_->localBytes;
+                function_->localBytes += storageSize(type);
+                const Variable variable{offset, false, type};
+                localScopes_.back().emplace(name, variable);
+                if (accept(TokenKind::Assign)) {
+                    emit(makeInstruction(
+                        CVM_OP_ADDRESS_LOCAL,
+                        CVM_TYPE_PTR,
+                        static_cast<std::int32_t>(offset)));
+                    emitInitializer(type);
+                }
+                take(TokenKind::Semicolon, "';'");
+                return;
+            }
             for (;;) {
                 TypePtr type = parsePointerSuffix(baseType);
                 const std::string name =
@@ -3257,9 +3593,92 @@ private:
                             enumValue->second) >> 32)));
                 return {intType(), false};
             }
+            const Variable *callable = lookupVariable(name);
+            if (callable != nullptr &&
+                callable->type->kind ==
+                    TypeKind::FunctionPointer &&
+                at(TokenKind::LeftParen)) {
+                emitAddress(*callable);
+                emit(makeInstruction(
+                    CVM_OP_LOAD,
+                    CVM_TYPE_PTR));
+                take(TokenKind::LeftParen, "'('");
+                std::vector<TypePtr> argumentTypes;
+                std::uint32_t argumentCount = 0;
+                if (!at(TokenKind::RightParen)) {
+                    for (;;) {
+                        Expression argument = parseExpression(1);
+                        makeRvalue(argument);
+                        TypePtr passedType = argument.type;
+                        if (argumentCount <
+                            callable->type->parameterTypes.size()) {
+                            TypePtr parameter =
+                                callable->type->parameterTypes[
+                                    argumentCount];
+                            emitConversion(argument.type, parameter);
+                            passedType = parameter;
+                        } else if (callable->type->variadic) {
+                            if (argument.type->kind ==
+                                TypeKind::Float) {
+                                passedType = scalarType(
+                                    TypeKind::Double,
+                                    false);
+                                emitConversion(
+                                    argument.type,
+                                    passedType);
+                            } else if (
+                                argument.type->kind ==
+                                    TypeKind::Character ||
+                                argument.type->kind ==
+                                    TypeKind::Short) {
+                                passedType = intType();
+                                emitConversion(
+                                    argument.type,
+                                    passedType);
+                            }
+                        }
+                        argumentTypes.push_back(passedType);
+                        ++argumentCount;
+                        if (!accept(TokenKind::Comma))
+                            break;
+                    }
+                }
+                take(TokenKind::RightParen, "')'");
+                const std::size_t fixed =
+                    callable->type->parameterTypes.size();
+                if ((!callable->type->variadic &&
+                     argumentCount != fixed) ||
+                    (callable->type->variadic &&
+                     argumentCount < fixed)) {
+                    fail(
+                        "argument count mismatch calling function pointer '" +
+                        name + "'");
+                }
+                CallFixup fixup;
+                fixup.instruction =
+                    static_cast<std::uint32_t>(
+                        function_->code.size());
+                fixup.function = name;
+                fixup.argumentTypes = std::move(argumentTypes);
+                fixup.nativeIndirect = true;
+                fixup.callingConvention =
+                    callable->type->callingConvention;
+                function_->calls.push_back(std::move(fixup));
+                emit(makeInstruction(
+                    CVM_OP_CALL_NATIVE_INDIRECT,
+                    vmType(callable->type->returnType),
+                    0,
+                    static_cast<std::int32_t>(argumentCount)));
+                return {callable->type->returnType, false};
+            }
             if (accept(TokenKind::LeftParen)) {
                 std::uint32_t argumentCount = 0;
                 std::vector<TypePtr> argumentTypes;
+                const auto prototypeFound = prototypes_.find(name);
+                const FunctionPrototype *prototype =
+                    prototypeFound == prototypes_.end()
+                        ? nullptr
+                        : &prototypeFound->second;
                 if (!at(TokenKind::RightParen)) {
                     for (;;) {
                         Expression argument = parseExpression(1);
@@ -3272,7 +3691,12 @@ private:
                         if (parameterType != nullptr) {
                             emitConversion(argument.type, parameterType);
                             passedType = parameterType;
-                        } else if (name == "printf") {
+                        } else if (
+                            name == "printf" ||
+                            (prototype != nullptr &&
+                             prototype->variadic &&
+                             argumentCount >=
+                                 prototype->parameterTypes.size())) {
                             if (argument.type->kind == TypeKind::Float) {
                                 passedType =
                                     scalarType(TypeKind::Double, false);
@@ -3291,11 +3715,31 @@ private:
                     }
                 }
                 take(TokenKind::RightParen, "')'");
-                function_->calls.push_back(
-                    CallFixup{
-                        static_cast<std::uint32_t>(function_->code.size()),
-                        name,
-                        std::move(argumentTypes)});
+                if (prototype != nullptr && prototype->native) {
+                    const std::size_t fixed =
+                        prototype->parameterTypes.size();
+                    if ((!prototype->variadic &&
+                         argumentCount != fixed) ||
+                        (prototype->variadic &&
+                         argumentCount < fixed)) {
+                        fail(
+                            "argument count mismatch calling native function '" +
+                            name + "'");
+                    }
+                }
+                CallFixup fixup;
+                fixup.instruction =
+                    static_cast<std::uint32_t>(function_->code.size());
+                fixup.function = name;
+                fixup.argumentTypes = std::move(argumentTypes);
+                if (prototype != nullptr && prototype->native) {
+                    fixup.nativeDeclared = true;
+                    fixup.library = prototype->library;
+                    fixup.symbol = prototype->symbol;
+                    fixup.callingConvention =
+                        prototype->callingConvention;
+                }
+                function_->calls.push_back(std::move(fixup));
                 emit(makeInstruction(
                     CVM_OP_CALL,
                     vmType(findFunctionReturnType(name)),
@@ -3494,6 +3938,30 @@ void writePackage(
 
     for (auto &function : functions) {
         for (const auto &fixup : function.calls) {
+            if (fixup.nativeIndirect) {
+                CvmNativeSignature signature{};
+                signature.first_parameter_type =
+                    static_cast<std::uint32_t>(
+                        signatureParameters.size());
+                signature.parameter_count =
+                    static_cast<std::uint16_t>(
+                        fixup.argumentTypes.size());
+                signature.return_type =
+                    function.code[fixup.instruction].type;
+                signature.calling_convention =
+                    static_cast<std::uint8_t>(
+                        fixup.callingConvention);
+                for (const TypePtr &type : fixup.argumentTypes) {
+                    signatureParameters.push_back(
+                        static_cast<std::uint8_t>(vmType(type)));
+                }
+                function.code[fixup.instruction].opcode =
+                    CVM_OP_CALL_NATIVE_INDIRECT;
+                function.code[fixup.instruction].a =
+                    static_cast<std::int32_t>(signatures.size());
+                signatures.push_back(signature);
+                continue;
+            }
             const auto found = functionIndices.find(fixup.function);
             if (found == functionIndices.end()) {
                 CvmNativeSignature signature{};
@@ -3504,12 +3972,18 @@ void writePackage(
                     static_cast<std::uint16_t>(fixup.argumentTypes.size());
                 signature.return_type =
                     function.code[fixup.instruction].type;
-                signature.calling_convention = CVM_CALL_CDECL;
+                signature.calling_convention =
+                    static_cast<std::uint8_t>(
+                        fixup.nativeDeclared
+                            ? fixup.callingConvention
+                            : CVM_CALL_CDECL);
                 for (const TypePtr &type : fixup.argumentTypes)
                     signatureParameters.push_back(
                         static_cast<std::uint8_t>(vmType(type)));
-                import.library_string = strings.add("PICOC");
-                import.symbol_string = strings.add(fixup.function);
+                import.library_string = strings.add(
+                    fixup.nativeDeclared ? fixup.library : "PICOC");
+                import.symbol_string = strings.add(
+                    fixup.nativeDeclared ? fixup.symbol : fixup.function);
                 import.signature_index =
                     static_cast<std::uint32_t>(signatures.size());
                 signatures.push_back(signature);
@@ -3576,6 +4050,17 @@ void writePackage(
     header.pointer_size = static_cast<std::uint8_t>(target.pointerSize);
     header.endian = 1;
     header.profile = CVM_PROFILE_PICOC_COMPAT;
+    if (!imports.empty())
+        header.features |= CVM_FEATURE_NATIVE_IMPORTS;
+    if (std::any_of(
+            code.begin(),
+            code.end(),
+            [](const CvmInstruction &instruction) {
+                return instruction.opcode ==
+                    CVM_OP_CALL_NATIVE_INDIRECT;
+            })) {
+        header.features |= CVM_FEATURE_NATIVE_INDIRECT;
+    }
     header.section_count = sectionCount;
     header.entry_function = entry;
     header.required_stack_cells = 256;
@@ -3669,37 +4154,58 @@ void writePackage(
 int main(int argc, char **argv)
 {
     TargetDataModel target = defaultTargetDataModel();
+    std::vector<std::filesystem::path> includePaths;
     int argument = 1;
-    if (argument < argc && std::strcmp(argv[argument], "--target") == 0) {
-        if (argument + 1 >= argc) {
-            std::fprintf(stderr, "--target requires x86 or x64\n");
-            return 2;
+    while (argument < argc) {
+        if (std::strcmp(argv[argument], "--target") == 0) {
+            if (argument + 1 >= argc) {
+                std::fprintf(stderr, "--target requires x86 or x64\n");
+                return 2;
+            }
+            const char *name = argv[argument + 1];
+            if (std::strcmp(name, "x86") == 0 ||
+                std::strcmp(name, "win32") == 0) {
+                target = targetDataModel(CVM_ARCH_X86);
+            } else if (
+                std::strcmp(name, "x64") == 0 ||
+                std::strcmp(name, "win64") == 0) {
+                target = targetDataModel(CVM_ARCH_X64);
+            } else {
+                std::fprintf(
+                    stderr,
+                    "unknown target '%s'; expected x86 or x64\n",
+                    name);
+                return 2;
+            }
+            argument += 2;
+            continue;
         }
-        const char *name = argv[argument + 1];
-        if (std::strcmp(name, "x86") == 0 ||
-            std::strcmp(name, "win32") == 0) {
-            target = targetDataModel(CVM_ARCH_X86);
-        } else if (
-            std::strcmp(name, "x64") == 0 ||
-            std::strcmp(name, "win64") == 0) {
-            target = targetDataModel(CVM_ARCH_X64);
-        } else {
-            std::fprintf(
-                stderr,
-                "unknown target '%s'; expected x86 or x64\n",
-                name);
-            return 2;
+        if (std::strcmp(argv[argument], "-I") == 0) {
+            if (argument + 1 >= argc) {
+                std::fprintf(stderr, "-I requires a directory\n");
+                return 2;
+            }
+            includePaths.emplace_back(argv[argument + 1]);
+            argument += 2;
+            continue;
         }
-        argument += 2;
+        if (std::strncmp(argv[argument], "-I", 2) == 0 &&
+            argv[argument][2] != '\0') {
+            includePaths.emplace_back(argv[argument] + 2);
+            ++argument;
+            continue;
+        }
+        break;
     }
     if (argc - argument != 2) {
         std::fprintf(
             stderr,
-            "usage: cvmc [--target x86|x64] <input.c> <output.cvm>\n");
+            "usage: cvmc [--target x86|x64] [-I directory] "
+            "<input.c> <output.cvm>\n");
         return 2;
     }
     try {
-        Preprocessor preprocessor;
+        Preprocessor preprocessor(includePaths, target.architecture);
         const std::string preprocessed =
             preprocessor.process(argv[argument]);
         if (std::strcmp(argv[argument + 1], "-E") == 0) {

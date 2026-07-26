@@ -1,5 +1,7 @@
 #include "cvm/runtime.h"
+#include "cvm/native.h"
 
+#include <Windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,8 +101,36 @@ static CvmStatus host_call(
     RunnerContext *runner = (RunnerContext *)context;
     (void)diagnostic;
 
-    if (strcmp(call->library, "PICOC") != 0)
-        return CVM_STATUS_UNRESOLVED_IMPORT;
+    if (call->address != 0)
+        return cvm_native_invoke_windows(
+            call->address,
+            call,
+            return_value,
+            diagnostic);
+    if (strcmp(call->library, "PICOC") != 0) {
+        char module_name[MAX_PATH];
+        HMODULE module;
+        FARPROC address;
+        size_t length = strlen(call->library);
+        if (length + 5 >= sizeof(module_name))
+            return CVM_STATUS_UNRESOLVED_IMPORT;
+        memcpy(module_name, call->library, length + 1);
+        if (strchr(module_name, '.') == NULL)
+            strcat(module_name, ".dll");
+        module = GetModuleHandleA(module_name);
+        if (module == NULL)
+            module = LoadLibraryA(module_name);
+        if (module == NULL)
+            return CVM_STATUS_UNRESOLVED_IMPORT;
+        address = GetProcAddress(module, call->symbol);
+        if (address == NULL)
+            return CVM_STATUS_UNRESOLVED_IMPORT;
+        return cvm_native_invoke_windows(
+            (uintptr_t)address,
+            call,
+            return_value,
+            diagnostic);
+    }
     if (strcmp(call->symbol, "__picoc_argc") == 0 &&
         call->parameter_count == 0) {
         return_value->i64 = runner->script_argc;

@@ -55,6 +55,7 @@ function Build-Architecture {
 
     & clang @commonArguments `
         (Join-Path $projectRoot "src\runtime\runtime.c") `
+        (Join-Path $projectRoot "src\runtime\native_windows.c") `
         (Join-Path $projectRoot "src\tools\cvmrun.c") `
         "-o", (Join-Path $outputDirectory "cvmrun.exe")
     if ($LASTEXITCODE -ne 0) {
