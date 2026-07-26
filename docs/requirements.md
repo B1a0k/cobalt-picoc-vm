@@ -54,11 +54,13 @@ executable code.
   only matching packages, while either compiler binary may cross-emit either
   target. The format carries architecture, pointer width, profile, feature,
   calling-convention, import, and signature metadata.
-- `CALL_NATIVE_INDIRECT` and the checksum/debug/relocation section IDs are
-  reserved in the stable contract. Native ABI dispatch is intentionally a
-  separate adapter, not part of the PicoC compatibility host.
+- `CALL_NATIVE_INDIRECT` is implemented using compiler-produced,
+  verifier-checked signatures. The checksum/debug/relocation section IDs remain
+  reserved in the stable contract.
+- Windows native ABI dispatch is a separate reusable adapter and is covered on
+  x86 and x64; product-specific symbol policy remains outside the VM core.
 
-## Later integration requirements
+## Integration boundary
 
 - Java `ScriptCompileService` invokes the isolated compiler and receives
   bytecode plus structured diagnostics.

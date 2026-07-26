@@ -27,13 +27,15 @@ flowchart LR
 - 使用完全独立的 C 运行时执行字节码，运行时不包含 C 解析器；
 - 执行前校验包结构、控制流、栈深度、索引、内存范围和资源声明；
 - 通过符号化宿主调用接口，为 `cvmrun` 提供 PicoC 库函数；
-- x86 和 x64 分别通过 95 项项目测试及 67 个 PicoC 根目录兼容用例。
+- 支持 BOF 风格 DFR 声明、官方解释器头文件、loader API，以及通过统一
+  ABI 边界调用带类型的原生函数指针；
+- x86 和 x64 分别通过 94 项项目测试、原生 FFI 门禁及 67 个 PicoC
+  根目录兼容用例。
 
-32 位或 64 位编译器都可以生成 x86、x64 `picoc-compat` 包。构建会产出
+32 位或 64 位编译器都可以生成 x86、x64 `picoc-compat` 或 `beacon` 包。构建会产出
 原生 32 位和 64 位 VM，而且每个 VM 都会在执行前拒绝另一种架构的包。
-格式仍为 Beacon 配置、间接原生调用、重定位、调试信息和校验和预留位置。
-这个版本不包含 Win32 API 解析、Beacon、BOF、Teamserver、DFR 声明和
-原生 ABI 调用适配器。
+原生调用支持 x86 `cdecl`/`stdcall` 和 Windows x64 ABI。重定位、调试信息
+及校验和仍为预留。符号解析和内存放行策略由宿主负责，不硬编码进 VM。
 
 ## 构建和快速使用
 
@@ -121,8 +123,8 @@ PicoC 测试语料的原许可证保存在
 | `build/x86/cvmrun.exe`、`build/x64/cvmrun.exe` | `build.ps1` | 对应架构的原生 VM 和独立宿主适配器 |
 | `build/<arch>/smoke_vm.exe` | `build.ps1` | 对应架构的公开接口和错误包冒烟测试 |
 | `build/<arch>/add.cvm` | `build.ps1` | 对应架构的端到端示例包，结果必须为 `5` |
-| `build/<arch>/extended-test-report.json` | `test.ps1` | 95 项对应架构二次测试的机器可读结果 |
-| `build/<arch>/extended-test-report.md` | `test.ps1` | 95 项对应架构二次测试的人类可读报告 |
+| `build/<arch>/extended-test-report.json` | `test.ps1` | 94 项对应架构二次测试的机器可读结果 |
+| `build/<arch>/extended-test-report.md` | `test.ps1` | 94 项对应架构二次测试的人类可读报告 |
 | `build/<arch>/picoc-test-report.json` | `test.ps1` | 67 个对应架构兼容用例的逐项结果 |
 | `build/architecture-test-report.json` | `test.ps1` | PE 架构、布局、跨目标生成和跨架构隔离测试 |
 
@@ -141,17 +143,20 @@ PicoC 测试语料的原许可证保存在
 - `if`、`switch`、`for`、`while`、`do`、`break`、`continue` 和 `goto`；
 - 聚合类型及数组初始化；
 - 本地头文件、对象宏、函数宏、条件预处理、`defined`、宏替换和取消宏；
+- `KERNEL32$LoadLibraryA: ptr (ptr);` 形式的 BOF DFR 声明，包括显式
+  `cdecl`、`stdcall`、整数/指针原子类型和 cdecl 变参签名；
+- 运行时赋值的带类型原生函数指针，包括官方文档中的 `GetProcAddress` 用法；
 - 测试所需的控制台、字符串、内存复制、数学和文件操作宿主函数。
 
 当前明确限制：
 
 - 当前目标限定为 Windows x86 和 Windows x64；
-- 不支持函数指针声明和调用；
+- 不支持指向脚本函数的函数指针/回调；已支持指向解析所得原生函数的带类型指针；
 - 不支持指定成员初始化；
-- 不支持 BOF 风格 DFR 声明；
-- `CALL_NATIVE_INDIRECT` 只是预留指令，在目标 ABI 适配器完成前校验器会拒绝；
-- 独立宿主只解析它支持的 `PICOC` 符号；
-- 不包含 Win32 DLL 查找、Beacon API 桥接、BOF 解析器或 Teamserver 服务；
+- 独立 `cvmrun` 宿主解析所支持的 `PICOC` 导入及 Windows loader/DFR 符号；
+  Beacon 嵌入方提供 `BEACON$` 和 `INTERNAL$` 策略；
+- DFR 原子类型不包含原生浮点和按值传递聚合对象；
+- 仓库不包含 Java Teamserver 服务；
 - 校验和、重定位分区和调试分区仍为预留；
 - 校验器保护 VM 自有内存和宿主明确允许的范围，但不能让所有 C 未定义行为变安全。
 
@@ -236,12 +241,13 @@ struct CvmInstruction {
 
 值类型包括 `VOID`、`I8`、`U8`、`I16`、`U16`、`I32`、`U32`、`I64`、
 `U64`、`F32`、`F64`、`PTR`、`CSTR` 和 `SIZE`。调用约定编号包括
-`DEFAULT`、`CDECL`、`STDCALL`、`WIN64` 和 `VM`。包里有调用约定信息
-不等于已经能调用原生函数，真正调用仍需要目标平台的宿主适配器。
+`DEFAULT`、`CDECL`、`STDCALL`、`WIN64` 和 `VM`。包里不保存函数地址；
+宿主解析符号后，Windows 适配器负责 x86 `cdecl`/`stdcall` 和 Win64 的
+整数/指针原子调用。
 
 ## VM 指令集
 
-除 `CALL_NATIVE_INDIRECT` 外，下列第 1 版指令都已由运行时实现。部分指令是
+下列第 1 版指令都已由运行时实现。部分指令是
 格式和运行时提供的能力，当前编译器不一定会为每种源码写法生成它。
 
 | 分组 | 指令 | 作用 |
@@ -256,7 +262,7 @@ struct CvmInstruction {
 | 转换 | `CONVERT` | 在声明的 VM 值类型之间转换 |
 | 跳转 | `JUMP`、`JUMP_IF_ZERO`、`JUMP_IF_NONZERO` | 在同一函数内进行已校验的控制流跳转 |
 | 调用 | `CALL`、`RETURN`、`CALL_IMPORT` | VM 函数调用、返回和符号化宿主调用 |
-| 预留 | `CALL_NATIVE_INDIRECT` | 通过运行时地址进行带类型调用，目前校验器拒绝 |
+| 原生间接调用 | `CALL_NATIVE_INDIRECT` | 通过运行时地址及校验过的签名进行带类型调用 |
 
 编译器需要保持 C 的短路行为时，会把 `&&` 和 `||` 编译成条件跳转。指令表里
 存在某条指令，不代表编译器会为所有等价 C 表达式生成它。
@@ -318,11 +324,12 @@ sequenceDiagram
 flowchart LR
     A["CALL_IMPORT 导入编号"] --> B["库名 + 符号名 + 签名"]
     B --> C["CvmHost.call 回调"]
-    C --> D["独立 PICOC 适配器或未来宿主适配器"]
+    C --> D["独立 PICOC/Windows 适配器或嵌入宿主策略"]
 ```
 
 包通过字符串和校验过的签名标识导入函数，不包含 DLL 地址或函数指针。是否
-允许这个名称、怎样解析和调用，都由宿主决定。
+允许这个名称、怎样解析和调用，都由宿主决定。带类型间接调用的地址只在
+运行时取得（通常来自 `GetProcAddress`），签名仍是经过校验的包元数据。
 
 ## 校验和执行限制
 
@@ -359,7 +366,7 @@ flowchart LR
 - 11 个 Clang 原生程序对照；
 - 8 个必须编译失败的程序；
 - 4 个必须运行失败的程序；
-- 3 个明确不支持能力的拒绝测试；
+- 2 个明确不支持能力的拒绝测试；
 - 26 个独立的错误包变异；
 - 168 个生成表达式及一个生成的数组/循环工作负载；
 - 导入签名检查、编译器实际生成指令覆盖；
@@ -367,8 +374,8 @@ flowchart LR
 
 随后还会运行 15 项跨架构检查，覆盖原生 PE 机器类型、包目标信息、指针/
 结构体/数组布局、参数栈帧偏移、跨目标生成一致性、非法目标名，以及 x86
-和 x64 VM 互相拒绝错误架构包。发布门槛因此是每个架构 `95 + 67` 项、
-再加 15 项架构测试和两套原生冒烟链路。
+和 x64 VM 互相拒绝错误架构包。发布门槛因此是每个架构 `94 + 67` 项、
+再加原生 FFI 门禁、15 项架构测试和两套原生冒烟链路。
 
 随仓库提供的目录还包含 111 个 Csmith 程序和 1 个链表用例，供继续扩展
 兼容性。第三方开发者不需要另找 PicoC 源码仓库。它们目前不计入发布版本
@@ -415,16 +422,17 @@ cvm_module_destroy(module);
 `CvmHost.memory_access` 是可选接口，只应该允许很小且明确的宿主内存范围；
 传入 `NULL` 就是不允许访问外部内存。
 
-如果接入 Teamserver/Beacon，预期边界是：
+接入 Teamserver/Beacon 的边界是：
 
 1. Teamserver 运行 `cvmc`，只发送 `.cvm` 字节；
 2. Beacon 嵌入 `runtime.c`；
-3. Beacon 专用 `CvmHost.call` 解析允许的符号，并执行目标调用约定；
+3. Beacon 专用 `CvmHost.call` 解析允许的符号，再交给
+   `cvm_native_invoke_windows`；
 4. Beacon 专用内存回调只允许已批准 API 需要的缓冲区。
 
-完整接入仍需增加 DFR 语法、原生 ABI 适配器、导入策略，以及 Beacon 的
-分配器和输出绑定。x86/x64 类型布局、字节码生成和目标原生 VM 执行已经实现。
-当前包格式已经把剩余工作与 C 解析器、VM 指令循环分开。
+本仓库已经实现 DFR 语法和 x86/x64 原生 ABI 适配器。嵌入产品负责自己的
+导入白名单、Beacon 分配器/输出绑定、命令封装和传输。包格式把这些
+产品策略与 C 解析器、VM 指令循环分开。
 
 ## 扩展开发规则
 

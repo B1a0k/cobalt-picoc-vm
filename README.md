@@ -31,15 +31,17 @@ The current release:
   ranges, and resource declarations before execution;
 - provides a symbolic host-call boundary used by `cvmrun` for PicoC library
   functions;
-- passes 95 project-specific checks and all 67 validated root PicoC fixtures
+- supports BOF-style DFR declarations, official interpreter headers, loader
+  APIs, and typed native function pointers through one validated ABI boundary;
+- passes 94 project-specific checks, the native FFI gate, and all 67 validated root PicoC fixtures
   independently on both x86 and x64.
 
-The compiler emits x86 or x64 `picoc-compat` packages from either compiler
+The compiler emits x86 or x64 `picoc-compat` or `beacon` packages from either compiler
 binary. The build produces native 32-bit and 64-bit VMs, and each VM rejects
-packages for the other architecture before execution. The format still
-reserves the Beacon profile, native indirect calls, relocations, debug data,
-and checksum fields. Win32 API resolution, Beacon, BOF, Teamserver, DFR
-declarations, and a native ABI call adapter are not part of this release.
+packages for the other architecture before execution. Native calls support
+x86 `cdecl`/`stdcall` and the Windows x64 ABI. Relocations, debug data, and
+checksums remain reserved. Symbol resolution and memory policy intentionally
+remain host responsibilities rather than being hard-coded into the VM.
 
 ## Build and quick start
 
@@ -129,7 +131,7 @@ both targets compile the same compiler and runtime sources.
 | `build/x86/cvmrun.exe`, `build/x64/cvmrun.exe` | `build.ps1` | Native target VM and standalone host adapter |
 | `build/<arch>/smoke_vm.exe` | `build.ps1` | Target-native public API and malformed-package smoke test |
 | `build/<arch>/add.cvm` | `build.ps1` | Target-specific end-to-end sample package; its result must be `5` |
-| `build/<arch>/extended-test-report.json` | `test.ps1` | Machine-readable result for 95 target-specific secondary checks |
+| `build/<arch>/extended-test-report.json` | `test.ps1` | Machine-readable result for 94 target-specific secondary checks |
 | `build/<arch>/extended-test-report.md` | `test.ps1` | Human-readable target-specific secondary report |
 | `build/<arch>/picoc-test-report.json` | `test.ps1` | Per-fixture result for 67 target-specific compatibility tests |
 | `build/architecture-test-report.json` | `test.ps1` | PE architecture, layout, cross-emission, and cross-runtime isolation checks |
@@ -154,20 +156,26 @@ The compiler currently covers the behavior exercised by the published tests:
 - aggregate and array initialization;
 - local includes, object-like and function-like macros, conditional
   preprocessing, `defined`, macro replacement, and macro removal;
+- BOF-style declarations such as
+  `KERNEL32$LoadLibraryA: ptr (ptr);`, including explicit `cdecl`,
+  `stdcall`, integer/pointer atoms, and cdecl variadic signatures;
+- typed native function pointers populated at runtime, including the
+  documented `GetProcAddress` pattern;
 - PicoC compatibility imports for tested console, string, memory-copy, math,
   and file operations.
 
 Current explicit limits:
 
 - target names are currently limited to Windows x86 and Windows x64;
-- function-pointer declarations and calls are rejected;
+- script-defined function pointers/callbacks are rejected; typed pointers to
+  resolved native functions are supported;
 - designated initializers are rejected;
-- BOF-style DFR declarations are rejected;
-- `CALL_NATIVE_INDIRECT` is reserved and rejected by the verifier until a
-  target ABI adapter exists;
-- the standalone host resolves only its supported symbolic `PICOC` imports;
-- no Win32 DLL lookup, Beacon API bridge, BOF resolver, or Teamserver service
-  is included;
+- the standalone `cvmrun` host resolves its supported `PICOC` imports plus
+  Windows loader/DFR symbols; a Beacon embedding supplies the `BEACON$` and
+  `INTERNAL$` policy;
+- native floating-point and aggregate-by-value ABI calls are outside the DFR
+  atom contract;
+- the repository does not include a Java Teamserver service;
 - checksum generation/validation and relocation/debug sections are reserved;
 - the verifier protects VM-owned memory and host-approved ranges; it does not
   make undefined C behavior safe in general.
@@ -258,13 +266,14 @@ boundary and branch validation simple.
 Value types are `VOID`, `I8`, `U8`, `I16`, `U16`, `I32`, `U32`, `I64`, `U64`,
 `F32`, `F64`, `PTR`, `CSTR`, and `SIZE`. Calling-convention metadata values are
 `DEFAULT`, `CDECL`, `STDCALL`, `WIN64`, and `VM`. Metadata support does not by
-itself perform a native call; that requires a host adapter for the target ABI.
+itself select an address; the Windows adapter performs the integer/pointer atom
+contract for x86 `cdecl`/`stdcall` and Win64 after host symbol resolution.
 
 ## Instruction set
 
-All version 1 instructions below are implemented by the runtime except
-`CALL_NATIVE_INDIRECT`. Some instructions are format/runtime capabilities that
-the current compiler does not need to emit for every source form.
+All version 1 instructions below are implemented by the runtime. Some
+instructions are format/runtime capabilities that the current compiler does
+not need to emit for every source form.
 
 | Group | Opcodes | Purpose |
 |---|---|---|
@@ -278,7 +287,7 @@ the current compiler does not need to emit for every source form.
 | Conversion | `CONVERT` | Convert between declared VM value types |
 | Branch | `JUMP`, `JUMP_IF_ZERO`, `JUMP_IF_NONZERO` | Validated control flow within one function |
 | Calls | `CALL`, `RETURN`, `CALL_IMPORT` | VM calls, returns, and symbolic host calls |
-| Reserved | `CALL_NATIVE_INDIRECT` | Typed call through a runtime address; verifier currently rejects it |
+| Native indirect | `CALL_NATIVE_INDIRECT` | Typed call through a runtime address with a validated signature |
 
 The compiler lowers C `&&` and `||` to conditional branches when it must
 preserve short-circuit behavior. Opcode presence is not a promise that the
@@ -345,12 +354,14 @@ sequenceDiagram
 flowchart LR
     A["CALL_IMPORT import ID"] --> B["library + symbol + signature"]
     B --> C["CvmHost.call callback"]
-    C --> D["standalone PICOC adapter or future host adapter"]
+    C --> D["standalone PICOC/Windows adapter or embedding host policy"]
 ```
 
 The package identifies an import by strings and a validated signature. It does
 not contain a DLL address or function pointer. The host decides whether and
-how to resolve the name.
+how to resolve the name. A typed indirect call receives its address only at
+runtime, normally from `GetProcAddress`, while its signature remains verified
+package metadata.
 
 ## Verification and execution limits
 
@@ -391,7 +402,7 @@ x64:
 - 11 native Clang differential programs;
 - 8 required compiler failures;
 - 4 required runtime failures;
-- 3 explicit unsupported-feature failures;
+- 2 explicit unsupported-feature failures;
 - 26 independent package mutations;
 - 168 generated expression properties and one generated array/loop workload;
 - symbolic import/signature inspection and compiler-emitted opcode coverage;
@@ -401,8 +412,8 @@ It then runs 15 cross-architecture checks covering native PE machine types,
 package target metadata, pointer/aggregate/array layout, parameter frame
 offsets, deterministic cross-emission, invalid target names, and rejection of
 x86 packages by x64 VMs and vice versa. The passing release gate is therefore
-`95 + 67` checks per architecture, plus 15 architecture checks and the native
-smoke pipelines.
+`94 + 67` checks per architecture, plus the native FFI gate, 15 architecture
+checks, and the native smoke pipelines.
 
 The vendored directory also contains 111 Csmith programs and one linked-list
 fixture for future compatibility work. They are retained so contributors can
@@ -451,19 +462,20 @@ cvm_module_destroy(module);
 calling convention, and values. `CvmHost.memory_access` is optional and should
 approve only narrow host-owned ranges. Passing `NULL` denies foreign memory.
 
-For a Teamserver/Beacon integration, the intended boundary is:
+For a Teamserver/Beacon integration, the boundary is:
 
 1. the Teamserver runs `cvmc` and sends only the `.cvm` bytes;
 2. Beacon embeds `runtime.c`;
-3. a Beacon-specific `CvmHost.call` resolves allowed symbols and performs the
-   target calling convention;
+3. a Beacon-specific `CvmHost.call` resolves allowed symbols and delegates to
+   `cvm_native_invoke_windows`;
 4. a Beacon-specific memory callback exposes only buffers required by the
    approved API call.
 
-That integration must add DFR syntax, a native ABI adapter, import policy, and
-Beacon allocator/output bindings. x86/x64 compiler layout and target-native VM
-execution are already implemented. The package format keeps the remaining
-integration concerns outside the C parser and VM instruction loop.
+DFR syntax and the x86/x64 native ABI adapter are implemented in this
+repository. The embedding application remains responsible for its import
+allow-list, Beacon allocator/output bindings, command framing, and transport.
+The package format keeps those product-specific concerns outside the C parser
+and VM instruction loop.
 
 ## Extending the project
 

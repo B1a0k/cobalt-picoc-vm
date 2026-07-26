@@ -22,17 +22,21 @@ the Beacon integration contract before observing the VM result.
 ## Capability accounting
 
 Unsupported syntax is not counted as implemented. It has a separate contract
-suite that requires a deterministic compiler rejection. Function pointers,
-designated initializers, and DFR declarations currently live in this category.
-When implemented, their tests must move to the positive suite and carry
-concrete output or metadata assertions.
+suite that requires a deterministic compiler rejection. Script-defined
+function pointers/callbacks and designated initializers currently live in this
+category. DFR declarations and typed pointers to resolved native functions
+have positive compile/runtime/signature assertions in the FFI suite.
 
-Each target-specific secondary report contains 95 passing checks: 13 semantics,
+Each target-specific secondary report contains 94 passing checks: 13 semantics,
 13 deterministic rebuilds, 13 source-separation checks, 11 native
 differentials, 8 negative compiler contracts, 4 runtime contracts,
-3 explicit unsupported contracts, 26 package mutations, 2 generated-property
+2 explicit unsupported contracts, 26 package mutations, 2 generated-property
 groups (168 expressions plus a generated array/loop workload), one symbolic
 import contract, and one compiler-emittable opcode coverage contract.
+
+`tools/run_ffi_tests.ps1` additionally verifies, on both targets, official
+headers, DFR metadata, loader APIs, cdecl/stdcall validation, typed indirect
+calls, and 64-bit native integer argument/return layout.
 
 ## Anti-target-fitting rules
 
