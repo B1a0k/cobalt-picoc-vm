@@ -762,11 +762,16 @@ private:
         std::vector<Conditional> conditions;
         std::string line;
         while (std::getline(input, line)) {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
             while (!line.empty() && line.back() == '\\') {
                 line.pop_back();
                 std::string continuation;
                 if (!std::getline(input, continuation))
                     break;
+                if (!continuation.empty() &&
+                    continuation.back() == '\r')
+                    continuation.pop_back();
                 line += continuation;
             }
             const std::string stripped = trim(line);
@@ -1381,6 +1386,16 @@ struct FunctionPrototype {
         std::vector<TypePtr> parameterTypeValues)
         : returnType(std::move(returnTypeValue)),
           parameterTypes(std::move(parameterTypeValues)) {}
+};
+
+struct ParsedParameterDeclaration {
+    TypePtr type;
+    std::string name;
+};
+
+struct ParsedParameterList {
+    std::vector<ParsedParameterDeclaration> parameters;
+    bool variadic{};
 };
 
 struct CompilationUnit {
@@ -2006,6 +2021,66 @@ private:
         return base;
     }
 
+    ParsedParameterList parseParameterList(
+        bool allowVariadic,
+        CvmCallingConvention callingConvention)
+    {
+        ParsedParameterList result;
+        if (at(TokenKind::RightParen))
+            return result;
+
+        // Only the complete token sequence "(void)" is an empty parameter
+        // list. "void *value" is an ordinary pointer declaration.
+        if (at(TokenKind::KwVoid) &&
+            position_ + 1 < tokens_.size() &&
+            tokens_[position_ + 1].kind == TokenKind::RightParen) {
+            ++position_;
+            return result;
+        }
+
+        std::unordered_map<std::string, bool> names;
+        for (;;) {
+            if (at(TokenKind::Ellipsis)) {
+                if (!allowVariadic)
+                    fail("script functions cannot be variadic");
+                if (result.parameters.empty())
+                    fail(
+                        "variadic parameter list requires a fixed parameter");
+                if (callingConvention == CVM_CALL_STDCALL)
+                    fail(
+                        "stdcall function pointer cannot be variadic");
+                ++position_;
+                result.variadic = true;
+                break;
+            }
+
+            TypePtr type = parsePointerSuffix(parseType());
+            if (type->kind == TypeKind::Void)
+                fail(
+                    "parameter cannot have void type; "
+                    "use 'void *' for an opaque pointer");
+            std::string name;
+            if (at(TokenKind::Identifier)) {
+                name = take(
+                    TokenKind::Identifier,
+                    "parameter name").text;
+                if (!names.emplace(name, true).second)
+                    fail("duplicate parameter name '" + name + "'");
+            }
+            if (at(TokenKind::LeftBracket))
+                type = parseArraySuffix(type);
+            if (type->kind == TypeKind::Array)
+                type = pointerType(type->element, target_);
+            result.parameters.push_back({type, std::move(name)});
+
+            if (!accept(TokenKind::Comma))
+                break;
+            if (at(TokenKind::RightParen))
+                fail("expected parameter after ','");
+        }
+        return result;
+    }
+
     TypePtr parseFunctionPointerDeclarator(
         const TypePtr &returnType,
         std::string &name)
@@ -2037,34 +2112,12 @@ private:
             target_.pointerAlignment);
         type->returnType = returnType;
         type->callingConvention = convention;
-        if (!at(TokenKind::RightParen)) {
-            if (at(TokenKind::KwVoid) &&
-                position_ + 1 < tokens_.size() &&
-                tokens_[position_ + 1].kind ==
-                    TokenKind::RightParen) {
-                ++position_;
-            } else {
-                for (;;) {
-                    if (accept(TokenKind::Ellipsis)) {
-                        if (convention == CVM_CALL_STDCALL)
-                            fail(
-                                "stdcall function pointer cannot be variadic");
-                        type->variadic = true;
-                        break;
-                    }
-                    TypePtr parameter =
-                        parsePointerSuffix(parseType());
-                    if (at(TokenKind::Identifier))
-                        ++position_;
-                    if (parameter->kind == TypeKind::Array)
-                        parameter =
-                            pointerType(parameter->element, target_);
-                    type->parameterTypes.push_back(parameter);
-                    if (!accept(TokenKind::Comma))
-                        break;
-                }
-            }
-        }
+        ParsedParameterList parameters =
+            parseParameterList(true, convention);
+        for (ParsedParameterDeclaration &parameter :
+             parameters.parameters)
+            type->parameterTypes.push_back(std::move(parameter.type));
+        type->variadic = parameters.variadic;
         take(TokenKind::RightParen, "')'");
         return type;
     }
@@ -2530,48 +2583,32 @@ private:
 
         std::uint32_t parameterOffset = 0;
         std::vector<TypePtr> declaredParameterTypes;
-        if (!at(TokenKind::RightParen)) {
-            if (at(TokenKind::KwVoid)) {
-                take(TokenKind::KwVoid, "'void'");
-            } else {
-                for (;;) {
-                    TypePtr type = parseType();
-                    type = parsePointerSuffix(type);
-                    if (type->kind == TypeKind::Void)
-                        fail("parameter cannot have void type");
-                    std::string name;
-                    if (at(TokenKind::Identifier))
-                        name = take(
-                            TokenKind::Identifier,
-                            "parameter name").text;
-                    else
-                        name = "__parameter_" +
-                            std::to_string(parsed.parameters.size());
-                    if (at(TokenKind::LeftBracket))
-                        type = parseArraySuffix(type);
-                    if (type->kind == TypeKind::Array)
-                        type = pointerType(type->element, target_);
-                    declaredParameterTypes.push_back(type);
-                    parameterOffset =
-                        alignStorage(parameterOffset, type->alignment);
-                    parsed.localAlignment =
-                        std::max(parsed.localAlignment, type->alignment);
-                    CvmParameter parameter{};
-                    parameter.frame_offset = parameterOffset;
-                    parameter.value_type =
-                        static_cast<std::uint8_t>(vmType(type));
-                    parsed.parameters.push_back({name, parameter});
-                    parsed.variables.emplace(
-                        name,
-                        Variable{parameterOffset, false, type});
-                    localScopes_.back().emplace(
-                        name,
-                        Variable{parameterOffset, false, type});
-                    parameterOffset += storageSize(type);
-                    if (!accept(TokenKind::Comma))
-                        break;
-                }
-            }
+        ParsedParameterList parameterList =
+            parseParameterList(false, CVM_CALL_CDECL);
+        for (ParsedParameterDeclaration &declaration :
+             parameterList.parameters) {
+            TypePtr type = std::move(declaration.type);
+            std::string parameterName = declaration.name.empty()
+                ? "__parameter_" +
+                    std::to_string(parsed.parameters.size())
+                : std::move(declaration.name);
+            declaredParameterTypes.push_back(type);
+            parameterOffset =
+                alignStorage(parameterOffset, type->alignment);
+            parsed.localAlignment =
+                std::max(parsed.localAlignment, type->alignment);
+            CvmParameter parameter{};
+            parameter.frame_offset = parameterOffset;
+            parameter.value_type =
+                static_cast<std::uint8_t>(vmType(type));
+            parsed.parameters.push_back({parameterName, parameter});
+            parsed.variables.emplace(
+                parameterName,
+                Variable{parameterOffset, false, type});
+            localScopes_.back().emplace(
+                parameterName,
+                Variable{parameterOffset, false, type});
+            parameterOffset += storageSize(type);
         }
         take(TokenKind::RightParen, "')'");
 
@@ -3527,6 +3564,16 @@ private:
         return nullptr;
     }
 
+    void requireConcretePointee(
+        const TypePtr &element,
+        const std::string &operation) const
+    {
+        if (element == nullptr || element->kind == TypeKind::Void)
+            fail(
+                "cannot " + operation +
+                " void pointer; cast it to a concrete pointer type");
+    }
+
     Expression parsePrefix()
     {
         if (accept(TokenKind::KwSizeof)) {
@@ -3585,6 +3632,9 @@ private:
             makeRvalue(expression);
             if (!isPointerLike(expression.type))
                 fail("dereference requires a pointer");
+            requireConcretePointee(
+                expression.type->element,
+                "dereference");
             return {
                 expression.type->element != nullptr
                     ? expression.type->element
@@ -3661,6 +3711,7 @@ private:
                 } else {
                     fail("subscript requires an array or pointer");
                 }
+                requireConcretePointee(element, "index");
                 Expression index = parseExpression();
                 makeRvalue(index);
                 take(TokenKind::RightBracket, "']'");
@@ -4049,6 +4100,7 @@ private:
                     } else {
                         fail("subscript requires an array or pointer");
                     }
+                    requireConcretePointee(element, "index");
                     Expression index = parseExpression();
                     makeRvalue(index);
                     take(TokenKind::RightBracket, "']'");

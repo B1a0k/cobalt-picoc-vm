@@ -29,7 +29,7 @@ flowchart LR
 - 通过符号化宿主调用接口，为 `cvmrun` 提供 PicoC 库函数；
 - 支持 BOF 风格 DFR 声明、官方解释器头文件、loader API，以及通过统一
   ABI 边界调用带类型的原生函数指针；
-- x86 和 x64 分别通过 94 项项目测试、原生 FFI 门禁及 67 个 PicoC
+- x86 和 x64 分别通过 109 项项目测试、原生 FFI 门禁及 67 个 PicoC
   根目录兼容用例。
 
 32 位或 64 位编译器都可以生成 x86、x64 `picoc-compat` 或 `beacon` 包。构建会产出
@@ -123,8 +123,8 @@ PicoC 测试语料的原许可证保存在
 | `build/x86/cvmrun.exe`、`build/x64/cvmrun.exe` | `build.ps1` | 对应架构的原生 VM 和独立宿主适配器 |
 | `build/<arch>/smoke_vm.exe` | `build.ps1` | 对应架构的公开接口和错误包冒烟测试 |
 | `build/<arch>/add.cvm` | `build.ps1` | 对应架构的端到端示例包，结果必须为 `5` |
-| `build/<arch>/extended-test-report.json` | `test.ps1` | 94 项对应架构二次测试的机器可读结果 |
-| `build/<arch>/extended-test-report.md` | `test.ps1` | 94 项对应架构二次测试的人类可读报告 |
+| `build/<arch>/extended-test-report.json` | `test.ps1` | 109 项对应架构二次测试的机器可读结果 |
+| `build/<arch>/extended-test-report.md` | `test.ps1` | 109 项对应架构二次测试的人类可读报告 |
 | `build/<arch>/picoc-test-report.json` | `test.ps1` | 67 个对应架构兼容用例的逐项结果 |
 | `build/architecture-test-report.json` | `test.ps1` | PE 架构、布局、跨目标生成和跨架构隔离测试 |
 
@@ -374,7 +374,7 @@ flowchart LR
 
 随后还会运行 15 项跨架构检查，覆盖原生 PE 机器类型、包目标信息、指针/
 结构体/数组布局、参数栈帧偏移、跨目标生成一致性、非法目标名，以及 x86
-和 x64 VM 互相拒绝错误架构包。发布门槛因此是每个架构 `94 + 67` 项、
+和 x64 VM 互相拒绝错误架构包。发布门槛因此是每个架构 `109 + 67` 项、
 再加原生 FFI 门禁、15 项架构测试和两套原生冒烟链路。
 
 随仓库提供的目录还包含 111 个 Csmith 程序和 1 个链表用例，供继续扩展

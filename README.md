@@ -33,7 +33,7 @@ The current release:
   functions;
 - supports BOF-style DFR declarations, official interpreter headers, loader
   APIs, and typed native function pointers through one validated ABI boundary;
-- passes 94 project-specific checks, the native FFI gate, and all 67 validated root PicoC fixtures
+- passes 109 project-specific checks, the native FFI gate, and all 67 validated root PicoC fixtures
   independently on both x86 and x64.
 
 The compiler emits x86 or x64 `picoc-compat` or `beacon` packages from either compiler
@@ -131,7 +131,7 @@ both targets compile the same compiler and runtime sources.
 | `build/x86/cvmrun.exe`, `build/x64/cvmrun.exe` | `build.ps1` | Native target VM and standalone host adapter |
 | `build/<arch>/smoke_vm.exe` | `build.ps1` | Target-native public API and malformed-package smoke test |
 | `build/<arch>/add.cvm` | `build.ps1` | Target-specific end-to-end sample package; its result must be `5` |
-| `build/<arch>/extended-test-report.json` | `test.ps1` | Machine-readable result for 94 target-specific secondary checks |
+| `build/<arch>/extended-test-report.json` | `test.ps1` | Machine-readable result for 109 target-specific secondary checks |
 | `build/<arch>/extended-test-report.md` | `test.ps1` | Human-readable target-specific secondary report |
 | `build/<arch>/picoc-test-report.json` | `test.ps1` | Per-fixture result for 67 target-specific compatibility tests |
 | `build/architecture-test-report.json` | `test.ps1` | PE architecture, layout, cross-emission, and cross-runtime isolation checks |
@@ -412,7 +412,7 @@ It then runs 15 cross-architecture checks covering native PE machine types,
 package target metadata, pointer/aggregate/array layout, parameter frame
 offsets, deterministic cross-emission, invalid target names, and rejection of
 x86 packages by x64 VMs and vice versa. The passing release gate is therefore
-`94 + 67` checks per architecture, plus the native FFI gate, 15 architecture
+`109 + 67` checks per architecture, plus the native FFI gate, 15 architecture
 checks, and the native smoke pipelines.
 
 The vendored directory also contains 111 Csmith programs and one linked-list

@@ -28,12 +28,13 @@ function pointers/callbacks and designated initializers currently live in this
 category. DFR declarations and typed pointers to resolved native functions
 have positive compile/runtime/signature assertions in the FFI suite.
 
-Each target-specific secondary report contains 94 passing checks: 13 semantics,
-13 deterministic rebuilds, 13 source-separation checks, 11 native
-differentials, 8 negative compiler contracts, 4 runtime contracts,
+Each target-specific secondary report contains 109 passing checks: 14 semantics,
+14 deterministic rebuilds, 14 source-separation checks, 12 native
+differentials, 18 negative compiler contracts, 4 runtime contracts,
 2 explicit unsupported contracts, 26 package mutations, 2 generated-property
 groups (168 expressions plus a generated array/loop workload), one symbolic
-import contract, and one compiler-emittable opcode coverage contract.
+import contract, one compiler-emittable opcode coverage contract, and one
+generated CRLF macro-continuation contract.
 
 `tools/run_ffi_tests.ps1` additionally verifies, on both targets, official
 headers, DFR metadata, loader APIs, cdecl/stdcall validation, typed indirect

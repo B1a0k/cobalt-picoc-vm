@@ -663,6 +663,62 @@ def generated_properties(
     ]
 
 
+def crlf_preprocessor_contract(
+    compiler: Path,
+    runtime: Path,
+    root: Path,
+    temporary: Path,
+) -> list[Result]:
+    case_root = temporary / "crlf-preprocessor"
+    case_root.mkdir()
+    header = case_root / "macros.h"
+    header.write_bytes(
+        b"#define ADD_LINES(left, right) \\\r\n"
+        b"    ((left) + \\\r\n"
+        b"     (right))\r\n"
+    )
+    source = case_root / "main.c"
+    source.write_bytes(
+        b"#include <stdio.h>\r\n"
+        b"#include \"macros.h\"\r\n"
+        b"int main(void) {\r\n"
+        b"  printf(\"%d\\n\", ADD_LINES(2, 3));\r\n"
+        b"  return 0;\r\n"
+        b"}\r\n"
+    )
+    package = case_root / "main.cvm"
+    compiled = compile_source(compiler, source, package, root)
+    if compiled.returncode != 0:
+        return [
+            Result(
+                "preprocessor_contract",
+                "crlf_line_continuation",
+                "compile_failed",
+                compiled.stderr.decode("utf-8", errors="replace").strip(),
+            )
+        ]
+    executed = execute_package(runtime, package, temporary)
+    if executed.returncode != 0 or normalized(executed.stdout) != b"5\n":
+        return [
+            Result(
+                "preprocessor_contract",
+                "crlf_line_continuation",
+                "failed",
+                (
+                    executed.stderr.decode("utf-8", errors="replace").strip()
+                    or repr(normalized(executed.stdout))
+                ),
+            )
+        ]
+    return [
+        Result(
+            "preprocessor_contract",
+            "crlf_line_continuation",
+            "passed",
+        )
+    ]
+
+
 def section_directory(package: bytes) -> list[tuple[int, list[int]]]:
     header = HEADER.unpack_from(package, 0)
     section_count = header[8]
@@ -980,6 +1036,11 @@ def main() -> int:
         )
         results.extend(
             generated_properties(
+                compiler, runtime, root, temporary
+            )
+        )
+        results.extend(
+            crlf_preprocessor_contract(
                 compiler, runtime, root, temporary
             )
         )
