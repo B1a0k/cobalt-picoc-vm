@@ -46,6 +46,12 @@ if ($LASTEXITCODE -ne 0 -or $pointerResult.Trim() -ne "5") {
     throw "$Architecture function pointer result mismatch: '$pointerResult'"
 }
 
+$i64Package = Compile-Test "native_i64"
+$i64Result = & $runner --print-result $i64Package
+if ($LASTEXITCODE -ne 0 -or $i64Result.Trim() -ne "9") {
+    throw "$Architecture i64 native result mismatch: '$i64Result'"
+}
+
 $negativeSource = Join-Path $testDirectory "dfr_stdcall_varargs.c"
 $negativeOutput = Join-Path $buildDirectory "dfr_stdcall_varargs.cvm"
 $oldPreference = $ErrorActionPreference
@@ -58,4 +64,4 @@ if ($negativeExit -eq 0 -or
     throw "$Architecture stdcall varargs rejection mismatch: $diagnostic"
 }
 
-Write-Host "$Architecture FFI: DFR, official headers, loader APIs, and typed indirect calls passed"
+Write-Host "$Architecture FFI: DFR, official headers, loader APIs, typed indirect calls, and i64 ABI passed"

@@ -62,16 +62,46 @@ static void set_error(
     diagnostic->message[sizeof(diagnostic->message) - 1] = '\0';
 }
 
-#if UINTPTR_MAX == UINT32_MAX
-static int is_64_bit_atom(CvmValueType type)
+#if defined(_MSC_VER) && defined(_M_IX86)
+/*
+ * Pushes the already-marshalled argument words in reverse order. Resetting
+ * ESP from EBP after the call makes the gate safe for both cdecl (caller
+ * cleanup) and stdcall (callee cleanup). EDX:EAX is preserved as the raw
+ * 64-bit return cell.
+ */
+__declspec(naked) static uint64_t __cdecl invoke_x86_words(
+    uintptr_t address,
+    const uint32_t *words,
+    uint32_t word_count)
 {
-    return type == CVM_TYPE_I64 ||
-           type == CVM_TYPE_U64 ||
-           type == CVM_TYPE_F32 ||
-           type == CVM_TYPE_F64;
+    __asm {
+        push ebp
+        mov ebp, esp
+        push ebx
+        push esi
+        push edi
+        mov ebx, [ebp + 8]
+        mov esi, [ebp + 12]
+        mov ecx, [ebp + 16]
+    push_loop:
+        test ecx, ecx
+        jz do_call
+        dec ecx
+        push dword ptr [esi + ecx * 4]
+        jmp push_loop
+    do_call:
+        call ebx
+        lea esp, [ebp - 12]
+        pop edi
+        pop esi
+        pop ebx
+        pop ebp
+        ret
+    }
 }
 #endif
 
+#if !(defined(_MSC_VER) && defined(_M_IX86))
 static CvmStatus invoke_cdecl(
     uintptr_t address,
     const uintptr_t *values,
@@ -135,6 +165,7 @@ static CvmStatus invoke_stdcall(
     *result = raw;
     return CVM_STATUS_OK;
 }
+#endif
 
 CvmStatus cvm_native_invoke_windows(
     uintptr_t address,
@@ -142,33 +173,54 @@ CvmStatus cvm_native_invoke_windows(
     CvmValue *return_value,
     CvmDiagnostic *diagnostic)
 {
-    uintptr_t values[16];
     uintptr_t raw = 0;
+    uint64_t raw64 = 0;
     uint32_t index;
+#if !(defined(_MSC_VER) && defined(_M_IX86))
+    uintptr_t values[16];
     CvmStatus status;
+#endif
 
     if (address == 0 || call == NULL || return_value == NULL ||
         call->parameter_count > 16) {
         set_error(diagnostic, "invalid native call request");
         return CVM_STATUS_NATIVE_CALL_FAILED;
     }
-#if UINTPTR_MAX == UINT32_MAX
-    if (is_64_bit_atom(call->return_type)) {
-        set_error(
-            diagnostic,
-            "64-bit native return atoms require the x86 assembly call gate");
-        return CVM_STATUS_NATIVE_CALL_FAILED;
-    }
-#endif
-    for (index = 0; index < call->parameter_count; ++index) {
-#if UINTPTR_MAX == UINT32_MAX
-        if (is_64_bit_atom(call->parameter_types[index])) {
-            set_error(
-                diagnostic,
-                "64-bit native parameter atoms require the x86 assembly call gate");
-            return CVM_STATUS_NATIVE_CALL_FAILED;
+#if defined(_MSC_VER) && defined(_M_IX86)
+    {
+        uint32_t words[32];
+        uint32_t word_count = 0;
+        for (index = 0; index < call->parameter_count; ++index) {
+            CvmValueType type = call->parameter_types[index];
+            if (type == CVM_TYPE_I64 ||
+                type == CVM_TYPE_U64 ||
+                type == CVM_TYPE_F64) {
+                if (word_count + 2 > 32) {
+                    set_error(
+                        diagnostic,
+                        "x86 native argument word limit exceeded");
+                    return CVM_STATUS_NATIVE_CALL_FAILED;
+                }
+                words[word_count++] =
+                    (uint32_t)call->arguments[index].u64;
+                words[word_count++] =
+                    (uint32_t)(call->arguments[index].u64 >> 32);
+            } else {
+                if (word_count + 1 > 32) {
+                    set_error(
+                        diagnostic,
+                        "x86 native argument word limit exceeded");
+                    return CVM_STATUS_NATIVE_CALL_FAILED;
+                }
+                words[word_count++] =
+                    (uint32_t)call->arguments[index].u64;
+            }
         }
-#endif
+        raw64 = invoke_x86_words(address, words, word_count);
+        raw = (uintptr_t)raw64;
+    }
+#else
+    for (index = 0; index < call->parameter_count; ++index) {
         values[index] = (uintptr_t)call->arguments[index].u64;
     }
 
@@ -188,8 +240,10 @@ CvmStatus cvm_native_invoke_windows(
         set_error(diagnostic, "native call gate rejected the signature");
         return status;
     }
+    raw64 = (uint64_t)raw;
+#endif
 
-    return_value->u64 = (uint64_t)raw;
+    return_value->u64 = raw64;
     switch (call->return_type) {
     case CVM_TYPE_I8:
         return_value->i64 = (int8_t)raw;
