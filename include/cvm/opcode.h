@@ -94,6 +94,9 @@ typedef struct CvmInstruction {
 
 #if defined(__cplusplus)
 static_assert(sizeof(CvmInstruction) == 12, "CvmInstruction layout changed");
+#elif defined(_MSC_VER)
+typedef char CvmInstruction_size_must_be_12[
+    sizeof(CvmInstruction) == 12 ? 1 : -1];
 #else
 _Static_assert(sizeof(CvmInstruction) == 12, "CvmInstruction layout changed");
 #endif

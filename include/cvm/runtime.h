@@ -18,6 +18,9 @@ typedef union CvmValue {
 
 #if defined(__cplusplus)
 static_assert(sizeof(CvmValue) == 8, "CvmValue cell layout changed");
+#elif defined(_MSC_VER)
+typedef char CvmValue_size_must_be_8[
+    sizeof(CvmValue) == 8 ? 1 : -1];
 #else
 _Static_assert(sizeof(CvmValue) == 8, "CvmValue cell layout changed");
 #endif

@@ -155,6 +155,11 @@ typedef struct CvmGlobal {
 #if defined(__cplusplus)
 static_assert(sizeof(CvmPackageHeader) == 44, "CvmPackageHeader layout changed");
 static_assert(sizeof(CvmSectionHeader) == 20, "CvmSectionHeader layout changed");
+#elif defined(_MSC_VER)
+typedef char CvmPackageHeader_size_must_be_44[
+    sizeof(CvmPackageHeader) == 44 ? 1 : -1];
+typedef char CvmSectionHeader_size_must_be_20[
+    sizeof(CvmSectionHeader) == 20 ? 1 : -1];
 #else
 _Static_assert(sizeof(CvmPackageHeader) == 44, "CvmPackageHeader layout changed");
 _Static_assert(sizeof(CvmSectionHeader) == 20, "CvmSectionHeader layout changed");
